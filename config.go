@@ -7,14 +7,27 @@ import (
 )
 
 const (
+	// KB represents a Kilobyte size.
 	KB = int64(1024)
+
+	// MB represents a Megabyte size.
 	MB = int64(1024) * KB
+
+	// GB represents a Gigabyte.
 	GB = int64(1024) * MB
 )
 
 type Config struct {
-	ReadLimit    *int64
-	PongWait     *time.Duration
+	// ReadLimit is the maximum size of the buffer used to receive raw messages
+	// from the websocket.
+	ReadLimit *int64
+
+	// PongWait is how much time we will wait without sending any message to the
+	// client before sending a PONG.
+	PongWait *time.Duration
+
+	// WriteTimeout is how much time is wait for sending a message to the
+	// websocket before triggering a timeout error.
 	WriteTimeout *time.Duration
 }
 
@@ -63,6 +76,7 @@ func (cf *configFactory) Build() Config {
 	return cf.config
 }
 
+// HandlerConfig
 type HandlerConfig struct {
 	Upgrader WebSocketUpgrader
 	Schema   *graphql.Schema
