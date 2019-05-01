@@ -3,19 +3,31 @@ package graphqlws
 import (
 	"time"
 
-	"github.com/gorilla/websocket"
+	"github.com/lab259/graphql"
 )
 
 const (
-	KB = 1024
-	MB = 1024 * KB
-	GB = 1024 * MB
+	KB = int64(1024)
+	MB = int64(1024) * KB
+	GB = int64(1024) * MB
 )
 
 type Config struct {
-	ReadLimit    int64
-	PongWait     time.Duration
-	WriteTimeout time.Duration
+	ReadLimit    *int64
+	PongWait     *time.Duration
+	WriteTimeout *time.Duration
+}
+
+var (
+	defaultReadLimit    = 5 * KB
+	defaultPongWait     = time.Second * 60
+	defaultWriteTimeout = time.Second * 15
+)
+
+var DefaultConfig = Config{
+	ReadLimit:    &defaultReadLimit,
+	PongWait:     &defaultPongWait,
+	WriteTimeout: &defaultWriteTimeout,
 }
 
 type configFactory struct {
@@ -23,24 +35,26 @@ type configFactory struct {
 }
 
 func NewConfigFactory() *configFactory {
-	return &configFactory{}
+	return &configFactory{
+		config: DefaultConfig,
+	}
 }
 
 // ReadLimit sets the value of the `ReadLimit` property of the `Config`.
 func (cf *configFactory) ReadLimit(value int64) *configFactory {
-	cf.config.ReadLimit = value
+	cf.config.ReadLimit = &value
 	return cf
 }
 
 // PongWait sets the value of the `PongWait` property of the `Config`.
 func (cf *configFactory) PongWait(value time.Duration) *configFactory {
-	cf.config.PongWait = value
+	cf.config.PongWait = &value
 	return cf
 }
 
 // WriteTimeout sets the value of the `WriteTimeout` property of the `Config`.
 func (cf *configFactory) WriteTimeout(value time.Duration) *configFactory {
-	cf.config.WriteTimeout = value
+	cf.config.WriteTimeout = &value
 	return cf
 }
 
@@ -50,7 +64,8 @@ func (cf *configFactory) Build() Config {
 }
 
 type HandlerConfig struct {
-	Upgrader *websocket.Upgrader
+	Upgrader WebSocketUpgrader
+	Schema   *graphql.Schema
 }
 
 type handlerConfigFactory struct {
@@ -61,7 +76,12 @@ func NewHandlerConfigFactory() *handlerConfigFactory {
 	return &handlerConfigFactory{}
 }
 
-func (f *handlerConfigFactory) Upgrader(upgrader *websocket.Upgrader) *handlerConfigFactory {
+func (f *handlerConfigFactory) Schema(schema *graphql.Schema) *handlerConfigFactory {
+	f.config.Schema = schema
+	return f
+}
+
+func (f *handlerConfigFactory) Upgrader(upgrader WebSocketUpgrader) *handlerConfigFactory {
 	f.config.Upgrader = upgrader
 	return f
 }
