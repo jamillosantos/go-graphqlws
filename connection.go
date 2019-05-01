@@ -315,10 +315,11 @@ func (c *Conn) readPumpIteration() {
 					break
 				}
 			} else if err != nil {
-				// TODO Add something to report this error.
+				c.logger.Error("error terminating the connection: ", err)
 			}
 		}
 
+		// TODO To close the connection.
 		return // Bye bye readPump
 	case gqlTypeStart:
 		var start GQLStart
@@ -345,7 +346,7 @@ func (c *Conn) readPumpIteration() {
 			}
 		}
 
-		// If any error happen ...
+		// If any error has happened ...
 		if len(errs) > 0 {
 			c.logger.Error("failed to HandleConnectionStart at gqlStart: ", errs)
 			// ... send it to the client.
@@ -377,7 +378,7 @@ func (c *Conn) readPumpIteration() {
 			}
 		}
 	default:
-		// TODO To call a default error handler or, maybe, a default mesasge handler.
+		// TODO To call a default error handler or, maybe, a default message handler.
 	}
 }
 
@@ -385,7 +386,10 @@ func (c *Conn) readPump() {
 	defer c.close()
 
 	// Prepare for the first pong.
+	// The read limit is the size of the package that will be read per once.
+	// That, might be adjustable depending your needs.
 	c.conn.SetReadLimit(*c.config.ReadLimit)
+
 	c.conn.SetPongHandler(c.pongHandler)
 	c.conn.SetCloseHandler(c.closeHandler)
 
@@ -398,19 +402,34 @@ func (c *Conn) readPump() {
 func (c *Conn) writePumpIteration() {
 	defer c.recover(Write)
 
+	// Ensure the channel is closed before leaving.
+	defer func() {
+		// Ensure it is safe to close the channel.
+		if c.outgoingMessages != nil {
+			close(c.outgoingMessages)
+			c.outgoingMessages = nil
+		}
+	}()
+
 	select {
+	// Waits until receive a message to be sent.
 	case operationMessage, ok := <-c.outgoingMessages:
 		if !ok {
 			return
 		}
+		// Well, if this is a EOF, it means that the connection was
 		if operationMessage == operationMessageEOF {
 			return
 		}
+		// Schedule a possible write timeout.
 		err := c.conn.SetWriteDeadline(time.Now().Add(*c.config.WriteTimeout))
 		if err != nil {
 			panic(err)
 		}
+		// Actually writes the response to the websocket connection.
 		c.conn.WriteJSON(operationMessage)
+	// In case it takes too long to detect a message to be written, we should
+	// send a PING to keep the connection open.
 	case <-time.After((*c.config.PongWait * 9) / 10):
 		err := c.conn.SetWriteDeadline(time.Now().Add(*c.config.WriteTimeout))
 		if err != nil {
