@@ -245,7 +245,8 @@ func (c *Conn) gqlStart(start *GQLStart) {
 
 // readPumpIteration runs one read iteration.
 func (c *Conn) readPumpIteration() {
-	// TODO Add crash protection
+	defer c.recover(Read)
+
 	var operationMessage OperationMessage
 	err := c.conn.ReadJSON(&operationMessage)
 	if err != nil {
@@ -395,7 +396,8 @@ func (c *Conn) readPump() {
 }
 
 func (c *Conn) writePumpIteration() {
-	// TODO Add crash protection
+	defer c.recover(Write)
+
 	select {
 	case operationMessage, ok := <-c.outgoingMessages:
 		if !ok {
