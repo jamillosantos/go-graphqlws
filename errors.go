@@ -5,7 +5,15 @@ import "errors"
 var (
 	ErrConnectionClosed                = errors.New("connection already closed")
 	ErrUpgraderRequired                = errors.New("upgrader required")
-	ErrClientDoesNotImplementGraphqlWS = errors.New("client does not implement the `graphql-ws` subprotocol ")
+	ErrClientDoesNotImplementGraphqlWS = errors.New("client does not implement the `graphql-ws` subprotocol")
+
+	// ErrReinitializationForbidden is triggered when a `gqlConnectionInit` is
+	// received twice.
+	ErrReinitializationForbidden = errors.New("reinitalization forbidden")
+
+	// ErrConnectionNotFullyEstablished is triggered when a `gqlStart` is received
+	// without finishing a `gqlConnectionInit`.
+	ErrConnectionNotFullyEstablished = errors.New("connection not established")
 )
 
 type HandlerError struct {

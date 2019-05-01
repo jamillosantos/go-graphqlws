@@ -15,7 +15,6 @@ type ConnState string
 const (
 	connStateUndefined    ConnState = ""
 	connStateInitializing ConnState = "initializing"
-	connStateErrored      ConnState = "errored"
 	connStateEstablished  ConnState = "established"
 	connStateClosed       ConnState = "closed"
 )
@@ -111,6 +110,7 @@ func (c *Conn) sendOperationErrors(id string, errs []error) error {
 
 func (c *Conn) close() {
 	_ = c.conn.Close()
+	c.state = connStateClosed
 }
 
 func (c *Conn) pongHandler(message string) error {
@@ -198,6 +198,30 @@ func (c *Conn) recover(t RWType) {
 }
 
 func (c *Conn) gqlStart(start *GQLStart) {
+	errs := make([]error, 0, 1)
+	// Go through the handlers and call all `ConnectionStartHandler`s found.
+	for _, handler := range c.handlers {
+		h, ok := handler.(ConnectionStartHandler)
+		if !ok { // If not a `ConnectionStartHandler` try next.
+			return
+		}
+		errsIn := h.HandleConnectionStart(start)
+		if len(errs) > 0 { // Keep aggregating errors
+			errs = append(errs, errsIn...)
+		}
+	}
+
+	// If any error has happened ...
+	if len(errs) > 0 {
+		c.logger.Error("failed to HandleConnectionStart at gqlStart: ", errs)
+		// ... send it to the client.
+		err := c.sendOperationErrors(start.ID, errs)
+		if err != nil {
+			c.logger.Error("failed to sendOperationErrors when HandleConnectionStart errors at gqlStart: ", err)
+		}
+		return
+	}
+
 	var subscription SubscriptionInterface = &Subscription{
 		ID:            start.ID,
 		Query:         start.Payload.Query,
@@ -243,6 +267,20 @@ func (c *Conn) gqlStart(start *GQLStart) {
 	// return config.SubscriptionManager.AddSubscription(conn, subscription)
 }
 
+func (c *Conn) gqlStop(stop *GQLStop) {
+	// Go through the handlers and call all `ConnectionStopHandler`s found.
+	for _, handler := range c.handlers {
+		h, ok := handler.(ConnectionStopHandler)
+		if !ok { // If not a `ConnectionStartHandler` try next.
+			continue
+		}
+		err := h.HandleConnectionStop(stop)
+		if err != nil {
+			// TODO Call the default erro handler.
+		}
+	}
+}
+
 // readPumpIteration runs one read iteration.
 func (c *Conn) readPumpIteration() {
 	defer c.recover(Read)
@@ -256,6 +294,12 @@ func (c *Conn) readPumpIteration() {
 
 	switch operationMessage.Type {
 	case gqlTypeConnectionInit:
+		// If the connection is not initializing, it is a protocol error and the
+		// connection should be reset.
+		if c.state != connStateInitializing {
+			panic(ErrReinitializationForbidden)
+		}
+
 		var connectionInit GQLConnectionInit
 		// Unmarshals the income payload into a `GQLConnectionInit`
 		err = json.Unmarshal(operationMessage.Payload, &connectionInit)
@@ -295,6 +339,9 @@ func (c *Conn) readPumpIteration() {
 
 		// Add message to be sent for the writePump
 		c.outgoingMessages <- gqlConnectionAck
+
+		// Now the handshake is done.
+		c.state = connStateEstablished
 	case gqlTypeConnectionTerminate:
 		var terminate GQLConnectionTerminate
 
@@ -319,9 +366,14 @@ func (c *Conn) readPumpIteration() {
 			}
 		}
 
-		// TODO To close the connection.
+		// This should close end readPump and writePump.
+		c.close()
+
 		return // Bye bye readPump
 	case gqlTypeStart:
+		if c.state == connStateEstablished {
+			panic(ErrConnectionNotFullyEstablished)
+		}
 		var start GQLStart
 		err = json.Unmarshal(operationMessage.Payload, &start)
 		if err != nil {
@@ -329,30 +381,6 @@ func (c *Conn) readPumpIteration() {
 			err = c.sendOperationErrors(start.ID, []error{err})
 			if err != nil {
 				c.logger.Error("failed to sendOperationErrors at gqlStart: ", err)
-			}
-			return
-		}
-
-		errs := make([]error, 0)
-		// Go through the handlers and call all `ConnectionStartHandler`s found.
-		for _, handler := range c.handlers {
-			h, ok := handler.(ConnectionStartHandler)
-			if !ok { // If not a `ConnectionStartHandler` try next.
-				return
-			}
-			errsIn := h.HandleConnectionStart(&start)
-			if len(errs) > 0 { // Keep aggregating errors
-				errs = append(errs, errsIn...)
-			}
-		}
-
-		// If any error has happened ...
-		if len(errs) > 0 {
-			c.logger.Error("failed to HandleConnectionStart at gqlStart: ", errs)
-			// ... send it to the client.
-			err = c.sendOperationErrors(start.ID, errs)
-			if err != nil {
-				c.logger.Error("failed to sendOperationErrors when HandleConnectionStart errors at gqlStart: ", err)
 			}
 			return
 		}
@@ -366,17 +394,7 @@ func (c *Conn) readPumpIteration() {
 			panic(err)
 		}
 
-		// Go through the handlers and call all `ConnectionStopHandler`s found.
-		for _, handler := range c.handlers {
-			h, ok := handler.(ConnectionStopHandler)
-			if !ok { // If not a `ConnectionStartHandler` try next.
-				continue
-			}
-			err := h.HandleConnectionStop(&stop)
-			if err != nil {
-				// TODO Call the default erro handler.
-			}
-		}
+		c.gqlStop(&stop)
 	default:
 		// TODO To call a default error handler or, maybe, a default message handler.
 	}
@@ -384,6 +402,8 @@ func (c *Conn) readPumpIteration() {
 
 func (c *Conn) readPump() {
 	defer c.close()
+
+	c.state = connStateInitializing
 
 	// Prepare for the first pong.
 	// The read limit is the size of the package that will be read per once.
