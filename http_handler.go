@@ -11,13 +11,15 @@ import (
 //
 // IMPORTANT: If `conn` is not finished. It will stay on forever.
 func NewHttpHandler(handlerConfig HandlerConfig, connectionConfig Config, handler func(*Conn, error)) http.Handler {
-	upgrader := handlerConfig.Upgrader
-	if upgrader == nil {
+	if handlerConfig.Upgrader == nil {
 		panic(ErrUpgraderRequired)
 	}
-	upgrader.AddSubprotocol("graphql-ws")
+	if handlerConfig.Schema == nil {
+		panic(ErrSchemaRequired)
+	}
+	handlerConfig.Upgrader.AddSubprotocol("graphql-ws")
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		ws, err := upgrader.Upgrade(w, r)
+		ws, err := handlerConfig.Upgrader.Upgrade(w, r)
 		// Bail out if the WebSocket connection could not be established
 		if err != nil {
 			handler(nil, err)
