@@ -10,6 +10,17 @@
   version = "v1.7.0"
 
 [[projects]]
+  digest = "1:38ec74012390146c45af1f92d46e5382b50531247929ff3a685d2b2be65155ac"
+  name = "github.com/gomodule/redigo"
+  packages = [
+    "internal",
+    "redis",
+  ]
+  pruneopts = "UT"
+  revision = "9c11da706d9b7902c6da69c592f75637793fe121"
+  version = "v2.0.0"
+
+[[projects]]
   digest = "1:7b5c6e2eeaa9ae5907c391a91c132abfd5c9e8a784a341b5625e750c67e6825d"
   name = "github.com/gorilla/websocket"
   packages = ["."]
@@ -60,11 +71,10 @@
   revision = "3be045cc503344c551700381369b71cf18ca80cf"
 
 [[projects]]
-  digest = "1:a2255972b2de64055a31ceaf7d05689b45ea412a8ee1d8a535235251c7650081"
+  digest = "1:8bcae1de8bc7b854055bb8995a8f593c09521788d3bd4a8bbff4aa027a26457d"
   name = "github.com/lab259/graphql"
   packages = [
     ".",
-    "language/ast",
     "language/parser",
   ]
   pruneopts = "UT"
@@ -229,10 +239,11 @@
   analyzer-name = "dep"
   analyzer-version = 1
   input-imports = [
+    "github.com/gomodule/redigo/redis",
     "github.com/gorilla/websocket",
+    "github.com/graphql-go/graphql/language/ast",
     "github.com/jamillosantos/macchiato",
     "github.com/lab259/graphql",
-    "github.com/lab259/graphql/language/ast",
     "github.com/lab259/graphql/language/parser",
     "github.com/lab259/rlog",
     "github.com/onsi/ginkgo",

@@ -52,6 +52,20 @@ type ConnectionTerminateHandler interface {
 	HandleConnectionTerminate(*GQLConnectionTerminate) error
 }
 
+// SubscriptionStartHandler describes the  handler that will be called when a
+// subscription starts.
+type SubscriptionStartHandler interface {
+	Handler
+	HandleSubscriptionStart(subscription *Subscription) error
+}
+
+// SubscriptionStopHandler describes the  handler that will be called when a
+// subscription stops.
+type SubscriptionStopHandler interface {
+	Handler
+	HandleSubscriptionStop(subscription *Subscription) error
+}
+
 // WebsocketPongHandler describes the handler that will be called when the gorilla websocket pong handler is called.
 type WebsocketPongHandler interface {
 	Handler

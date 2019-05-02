@@ -25,9 +25,6 @@ func (topic MultipleTopic) ID() interface{} {
 
 // SubscriptionSubscriber does subscriptions in behalf a single Subscription
 type Subscriber interface {
-	// Subscription the subscription this subscriber is representing.
-	Subscription() SubscriptionInterface
-
 	// Topics returns the array of topics subscribed.
 	// It is designed for accumulating subscriptions before applying it to a
 	// connection.
@@ -36,4 +33,24 @@ type Subscriber interface {
 	// Subscribe does a subcription, or accumulate it (depends on the
 	// implementation).
 	Subscribe(topic Topic) error
+}
+
+type subscriber struct {
+	topics []Topic
+}
+
+// NewSubscriber creates a default implementation of a subscriber.
+func NewSubscriber() *subscriber {
+	return &subscriber{
+		topics: make([]Topic, 0),
+	}
+}
+
+func (subscriber *subscriber) Topics() []Topic {
+	return subscriber.topics
+}
+
+func (subscriber *subscriber) Subscribe(topic Topic) error {
+	subscriber.topics = append(subscriber.topics, topic)
+	return nil
 }

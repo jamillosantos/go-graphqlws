@@ -2,6 +2,8 @@ package graphqlws
 
 //
 // This file is based on https://github.com/functionalfoundry/graphqlws
+// implementation, which was the original implementation from where the main
+// ideas were picked up from.
 //
 
 import (

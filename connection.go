@@ -2,6 +2,7 @@ package graphqlws
 
 import (
 	"encoding/json"
+	"sync"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -25,33 +26,64 @@ var (
 )
 
 type Conn struct {
-	logger           rlog.Logger
-	state            ConnState
-	handlers         []Handler
-	conn             *websocket.Conn
-	config           *Config
-	outgoingMessages chan *OperationMessage
-	schema           *graphql.Schema
+	Logger            rlog.Logger
+	state             ConnState
+	handlersMutex     sync.Mutex
+	handlers          []Handler
+	conn              *websocket.Conn
+	config            *Config
+	outgoingMessages  chan *OperationMessage
+	Schema            *graphql.Schema
+	subscriptionMutex sync.Mutex
+	Subscriptions     map[string]*Subscription
 }
 
 // NewConn initializes a `Conn` instance.
 func NewConn(conn *websocket.Conn, schema *graphql.Schema, config *Config) *Conn {
 	c := &Conn{
-		schema:           schema,
+		Schema:           schema,
 		config:           config,
-		logger:           rlog.WithFields(nil), // TODO To add the connection ID here.
+		Logger:           rlog.WithFields(nil), // TODO To add the connection ID here.
 		conn:             conn,
 		outgoingMessages: make(chan *OperationMessage, 10),
 		handlers:         make([]Handler, 0, 3),
+		Subscriptions:    make(map[string]*Subscription, 3),
 	}
 	go c.readPump()
 	go c.writePump()
 	return c
 }
 
-// AddHandler adds a `Handler` to array.
+// AddHandler adds a `Handler` to the connection.
+//
+// See also `Handler`
 func (c *Conn) AddHandler(handler Handler) {
+	c.handlersMutex.Lock()
+	defer c.handlersMutex.Unlock()
+
 	c.handlers = append(c.handlers, handler)
+}
+
+// RemoveHandler removes a `Handler` from the connection.
+//
+// See also `Handler`
+func (c *Conn) RemoveHandler(handler Handler) {
+	c.handlersMutex.Lock()
+	defer c.handlersMutex.Unlock()
+
+	hs := c.handlers
+	for i, h := range c.handlers {
+		if h == handler {
+			hs = append(hs[:i], hs[i+1:])
+			break
+		}
+	}
+	c.handlers = hs
+}
+
+// SendData enqueues a message to be sent by the writePump.
+func (c *Conn) SendData(message *OperationMessage) {
+	c.outgoingMessages <- message
 }
 
 // SendError sends an error to the client.
@@ -197,6 +229,22 @@ func (c *Conn) recover(t RWType) {
 	}
 }
 
+// addSubscription appends a subscription to the connection.
+func (c *Conn) addSubscription(subscription *Subscription) {
+	c.subscriptionMutex.Lock()
+	defer c.subscriptionMutex.Unlock()
+
+	c.Subscriptions[subscription.ID] = subscription
+}
+
+// removeSubscription remove a subcription from the connection.
+func (c *Conn) removeSubscription(id string) {
+	c.subscriptionMutex.Lock()
+	defer c.subscriptionMutex.Unlock()
+
+	delete(c.Subscriptions, id)
+}
+
 func (c *Conn) gqlStart(start *GQLStart) {
 	errs := make([]error, 0, 1)
 	// Go through the handlers and call all `ConnectionStartHandler`s found.
@@ -213,16 +261,16 @@ func (c *Conn) gqlStart(start *GQLStart) {
 
 	// If any error has happened ...
 	if len(errs) > 0 {
-		c.logger.Error("failed to HandleConnectionStart at gqlStart: ", errs)
+		c.Logger.Error("failed to HandleConnectionStart at gqlStart: ", errs)
 		// ... send it to the client.
 		err := c.sendOperationErrors(start.ID, errs)
 		if err != nil {
-			c.logger.Error("failed to sendOperationErrors when HandleConnectionStart errors at gqlStart: ", err)
+			c.Logger.Error("failed to sendOperationErrors when HandleConnectionStart errors at gqlStart: ", err)
 		}
 		return
 	}
 
-	var subscription SubscriptionInterface = &Subscription{
+	subscription := &Subscription{
 		ID:            start.ID,
 		Query:         start.Payload.Query,
 		Variables:     start.Payload.Variables,
@@ -230,8 +278,8 @@ func (c *Conn) gqlStart(start *GQLStart) {
 		Connection:    c,
 	}
 
-	logger := c.logger.WithFields(rlog.Fields{
-		"subscription": subscription.GetID(),
+	logger := c.Logger.WithFields(rlog.Fields{
+		"subscription": subscription.ID,
 	})
 
 	if errors := ValidateSubscription(subscription); len(errors) > 0 {
@@ -241,7 +289,7 @@ func (c *Conn) gqlStart(start *GQLStart) {
 
 	// Parses the subscription query
 	document, err := parser.Parse(parser.ParseParams{
-		Source: subscription.GetQuery(),
+		Source: subscription.Query,
 	})
 	if err != nil {
 		logger.WithField("err", err).Warn("Failed to parse subscription query")
@@ -249,7 +297,7 @@ func (c *Conn) gqlStart(start *GQLStart) {
 	}
 
 	// Validate the query document
-	validation := graphql.ValidateDocument(c.schema, document, nil)
+	validation := graphql.ValidateDocument(c.Schema, document, nil)
 	if !validation.IsValid {
 		logger.WithFields(rlog.Fields{
 			"errors": validation.Errors,
@@ -258,13 +306,29 @@ func (c *Conn) gqlStart(start *GQLStart) {
 	}
 
 	// Remember the query document for later
-	subscription.SetDocument(document)
+	subscription.Document = document
 
 	// Extract query names from the document (typically, there should only be one)
-	subscription.SetFields(SubscriptionFieldNamesFromDocument(document))
+	subscription.Fields = SubscriptionFieldNamesFromDocument(document)
 
-	// TODO To uncomment this
-	// return config.SubscriptionManager.AddSubscription(conn, subscription)
+	c.addSubscription(subscription)
+
+	// Go through the handlers and call all `ConnectionTerminateHandler`s found.
+	for _, handler := range c.handlers {
+		h, ok := handler.(SubscriptionStartHandler)
+		if !ok { // If not a `ConnectionStartHandler` try next.
+			continue
+		}
+		err := h.HandleSubscriptionStart(subscription)
+		if hErr, ok := err.(*HandlerError); ok {
+			// This event cannot be default prevented.
+			if hErr.propagationStopped {
+				break
+			}
+		} else if err != nil {
+			c.Logger.Error("error terminating the connection: ", err)
+		}
+	}
 }
 
 func (c *Conn) gqlStop(stop *GQLStop) {
@@ -276,7 +340,30 @@ func (c *Conn) gqlStop(stop *GQLStop) {
 		}
 		err := h.HandleConnectionStop(stop)
 		if err != nil {
-			// TODO Call the default erro handler.
+			// TODO Call the default error handler.
+		}
+	}
+
+	subscription, ok := c.Subscriptions[stop.ID]
+	if !ok { // If the subscription does not exists.
+		c.Logger.Errorf("could not stop a non existing subscription: %s", stop.ID)
+		return
+	}
+
+	// Go through the handlers and call all `SubscriptionStopHandler`s found.
+	for _, handler := range c.handlers {
+		h, ok := handler.(SubscriptionStopHandler)
+		if !ok { // If not a `ConnectionStartHandler` try next.
+			continue
+		}
+		err := h.HandleSubscriptionStop(subscription)
+		if hErr, ok := err.(*HandlerError); ok {
+			// This event cannot be default prevented.
+			if hErr.propagationStopped {
+				break
+			}
+		} else if err != nil {
+			c.Logger.Error("error terminating the connection: ", err)
 		}
 	}
 }
@@ -327,7 +414,7 @@ func (c *Conn) readPumpIteration() {
 			} else if err != nil {
 				err = c.sendConnectionError(err)
 				if err != nil {
-					c.logger.Error("error sending a connection error: ", err)
+					c.Logger.Error("error sending a connection error: ", err)
 				}
 				return // Returning here have to be checked. It might call the close too early and let the client witout the response.
 			}
@@ -362,7 +449,7 @@ func (c *Conn) readPumpIteration() {
 					break
 				}
 			} else if err != nil {
-				c.logger.Error("error terminating the connection: ", err)
+				c.Logger.Error("error terminating the connection: ", err)
 			}
 		}
 
@@ -377,10 +464,10 @@ func (c *Conn) readPumpIteration() {
 		var start GQLStart
 		err = json.Unmarshal(operationMessage.Payload, &start)
 		if err != nil {
-			c.logger.Error("failed to unmarshal the payload at gqlStart: ", err)
+			c.Logger.Error("failed to unmarshal the payload at gqlStart: ", err)
 			err = c.sendOperationErrors(start.ID, []error{err})
 			if err != nil {
-				c.logger.Error("failed to sendOperationErrors at gqlStart: ", err)
+				c.Logger.Error("failed to sendOperationErrors at gqlStart: ", err)
 			}
 			return
 		}

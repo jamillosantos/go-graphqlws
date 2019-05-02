@@ -1,6 +1,7 @@
 package graphqlws
 
 import (
+	"encoding/json"
 	"errors"
 
 	"github.com/graphql-go/graphql/language/ast"
@@ -12,34 +13,22 @@ var (
 	ErrSubscriptionHasNoQuery      = errors.New("subscription query is empty")
 )
 
-func ValidateSubscription(s SubscriptionInterface) []error {
+func ValidateSubscription(s *Subscription) []error {
 	errs := make([]error, 0)
 
-	if s.GetID() == "" {
+	if s.ID == "" {
 		errs = append(errs, ErrSubscriptionIDEmpty)
 	}
 
-	if s.GetConnection() == nil {
+	if s.Connection == nil {
 		errs = append(errs, ErrSubscriptionHasNoConnection)
 	}
 
-	if s.GetQuery() == "" {
+	if s.Query == "" {
 		errs = append(errs, ErrSubscriptionHasNoQuery)
 	}
 
 	return errs
-}
-
-type SubscriptionInterface interface {
-	GetID() string
-	GetQuery() string
-	GetVariables() map[string]interface{}
-	GetOperationName() string
-	GetDocument() *ast.Document
-	GetFields() []string
-	GetConnection() *Conn
-	SetFields(document []string)
-	SetDocument(document *ast.Document)
 }
 
 // Subscription holds all information about a GraphQL subscription
@@ -57,44 +46,21 @@ type Subscription struct {
 	Connection    *Conn
 }
 
-func (s *Subscription) GetID() string {
-	return s.ID
+func (s *Subscription) SendData(data *GQLDataObject) error {
+	dataJson, err := json.Marshal(data)
+	if err != nil {
+		return err
+	}
+	s.Connection.SendData(&OperationMessage{
+		ID:      s.ID,
+		Type:    gqlTypeData,
+		Payload: dataJson,
+	})
+	return nil
 }
 
-func (s *Subscription) GetQuery() string {
-	return s.Query
-}
-
-func (s *Subscription) GetVariables() map[string]interface{} {
-	return s.Variables
-}
-
-func (s *Subscription) GetOperationName() string {
-	return s.OperationName
-}
-
-func (s *Subscription) SetDocument(value *ast.Document) {
-	s.Document = value
-}
-
-func (s *Subscription) GetDocument() *ast.Document {
-	return s.Document
-}
-
-func (s *Subscription) SetFields(value []string) {
-	s.Fields = value
-}
-
-func (s *Subscription) GetFields() []string {
-	return s.Fields
-}
-
-func (s *Subscription) GetConnection() *Conn {
-	return s.Connection
-}
-
-// MatchesField returns true if the subscription is for data that
-// belongs to the given field.
+// MatchesField returns true if the subscription is for data that belongs to the
+// given field.
 func (s *Subscription) MatchesField(field string) bool {
 	if s.Document == nil || len(s.Fields) == 0 {
 		return false
