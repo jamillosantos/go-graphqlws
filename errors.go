@@ -9,6 +9,7 @@ import (
 var (
 	ErrConnectionClosed                = errors.New("connection already closed")
 	ErrUpgraderRequired                = errors.New("upgrader required")
+	ErrSchemaRequired                  = errors.New("schema required")
 	ErrClientDoesNotImplementGraphqlWS = errors.New("client does not implement the `graphql-ws` subprotocol")
 	ErrSubscriptionNotFound            = errors.New("subscription not found")
 
