@@ -23,7 +23,6 @@ var _ = Describe("Upgrader", func() {
 		})
 
 		It("should try upgrading a connection", func() {
-
 			ts := httptest.NewServer(graphqlws.NewHttpHandler(
 				graphqlws.NewHandlerConfigFactory().
 					Schema(&graphql.Schema{}).
