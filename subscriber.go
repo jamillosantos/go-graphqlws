@@ -17,12 +17,6 @@ func (topic StringTopic) ID() interface{} {
 	return topic
 }
 
-type MultipleTopic []interface{}
-
-func (topic MultipleTopic) ID() interface{} {
-	return topic
-}
-
 // SubscriptionSubscriber does subscriptions in behalf a single Subscription
 type Subscriber interface {
 	// Topics returns the array of topics subscribed.
