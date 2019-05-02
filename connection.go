@@ -26,16 +26,15 @@ var (
 )
 
 type Conn struct {
-	Logger            rlog.Logger
-	state             ConnState
-	handlersMutex     sync.Mutex
-	handlers          []Handler
-	conn              *websocket.Conn
-	config            *Config
-	outgoingMessages  chan *OperationMessage
-	Schema            *graphql.Schema
-	subscriptionMutex sync.Mutex
-	Subscriptions     map[string]*Subscription
+	Logger           rlog.Logger
+	Schema           *graphql.Schema
+	Subscriptions    sync.Map
+	state            ConnState
+	handlersMutex    sync.Mutex
+	handlers         []Handler
+	conn             *websocket.Conn
+	config           *Config
+	outgoingMessages chan *OperationMessage
 }
 
 // NewConn initializes a `Conn` instance.
@@ -47,7 +46,6 @@ func NewConn(conn *websocket.Conn, schema *graphql.Schema, config *Config) *Conn
 		conn:             conn,
 		outgoingMessages: make(chan *OperationMessage, 10),
 		handlers:         make([]Handler, 0, 3),
-		Subscriptions:    make(map[string]*Subscription, 3),
 	}
 	go c.readPump()
 	go c.writePump()
@@ -231,18 +229,12 @@ func (c *Conn) recover(t RWType) {
 
 // addSubscription appends a subscription to the connection.
 func (c *Conn) addSubscription(subscription *Subscription) {
-	c.subscriptionMutex.Lock()
-	defer c.subscriptionMutex.Unlock()
-
-	c.Subscriptions[subscription.ID] = subscription
+	c.Subscriptions.Store(subscription.ID, subscription)
 }
 
 // removeSubscription remove a subcription from the connection.
 func (c *Conn) removeSubscription(id string) {
-	c.subscriptionMutex.Lock()
-	defer c.subscriptionMutex.Unlock()
-
-	delete(c.Subscriptions, id)
+	c.Subscriptions.Delete(id)
 }
 
 func (c *Conn) gqlStart(start *GQLStart) {
@@ -344,11 +336,13 @@ func (c *Conn) gqlStop(stop *GQLStop) {
 		}
 	}
 
-	subscription, ok := c.Subscriptions[stop.ID]
+	subs, ok := c.Subscriptions.Load(stop.ID)
 	if !ok { // If the subscription does not exists.
 		c.Logger.Errorf("could not stop a non existing subscription: %s", stop.ID)
 		return
 	}
+
+	subscription := subs.(*Subscription) // This is internally managed. So, it should be safe to force the typcast.
 
 	// Go through the handlers and call all `SubscriptionStopHandler`s found.
 	for _, handler := range c.handlers {

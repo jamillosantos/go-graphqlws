@@ -29,9 +29,10 @@
   version = "v1.4.0"
 
 [[projects]]
-  digest = "1:ebdd7bef1e3787f15208a5b190fb95680e145536e9a00c281e9f99108bd61b79"
+  digest = "1:52f1a02af8b59a37fddf70dab78f71aa5386d144e6f3d2309432b9c00e881c13"
   name = "github.com/graphql-go/graphql"
   packages = [
+    ".",
     "gqlerrors",
     "language/ast",
     "language/kinds",
@@ -42,6 +43,7 @@
     "language/source",
     "language/typeInfo",
     "language/visitor",
+    "testutil",
   ]
   pruneopts = "UT"
   revision = "08943645bf265d192b32f2100cdff2428f7ae7c5"
@@ -241,7 +243,9 @@
   input-imports = [
     "github.com/gomodule/redigo/redis",
     "github.com/gorilla/websocket",
+    "github.com/graphql-go/graphql/gqlerrors",
     "github.com/graphql-go/graphql/language/ast",
+    "github.com/graphql-go/graphql/testutil",
     "github.com/jamillosantos/macchiato",
     "github.com/lab259/graphql",
     "github.com/lab259/graphql/language/parser",
