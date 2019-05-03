@@ -1,7 +1,7 @@
 package graphqlws
 
 import (
-	"github.com/graphql-go/graphql/gqlerrors"
+	"github.com/lab259/graphql/gqlerrors"
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
 )

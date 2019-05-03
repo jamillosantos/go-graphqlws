@@ -33,7 +33,6 @@ func NewHttpHandler(handlerConfig HandlerConfig, connectionConfig Config, handle
 			return
 		}
 
-		conn := NewConn(ws, handlerConfig.Schema, &connectionConfig)
-		handler(conn, nil)
+		handler(NewConn(ws, handlerConfig.Schema, &connectionConfig))
 	})
 }

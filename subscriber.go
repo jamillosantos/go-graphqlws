@@ -40,6 +40,18 @@ func NewSubscriber() *subscriber {
 	}
 }
 
+// SubscriberSubscribe checks if the topic informed is a `Topic` valid. Then, it
+// subscribes the topic by calling `.Subscribe`.
+//
+// This method is required to meet the `graphql.Subscriber` interface.
+func (subscriber *subscriber) SubscriberSubscribe(topic interface{}) error {
+	t, ok := topic.(Topic)
+	if !ok {
+		return ErrInvalidTopic
+	}
+	return subscriber.Subscribe(t)
+}
+
 func (subscriber *subscriber) Topics() []Topic {
 	return subscriber.topics
 }

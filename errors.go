@@ -3,7 +3,7 @@ package graphqlws
 import (
 	"errors"
 
-	"github.com/graphql-go/graphql/gqlerrors"
+	"github.com/lab259/graphql/gqlerrors"
 )
 
 var (
@@ -20,6 +20,10 @@ var (
 	// ErrConnectionNotFullyEstablished is triggered when a `gqlStart` is received
 	// without finishing a `gqlConnectionInit`.
 	ErrConnectionNotFullyEstablished = errors.New("connection not established")
+
+	// ErrInvalidTopic is triggered when a `Subscriber.SubscriberSubscribe`
+	// receives an invalid `Topic`.
+	ErrInvalidTopic = errors.New("invalid topic")
 )
 
 type HandlerError struct {
