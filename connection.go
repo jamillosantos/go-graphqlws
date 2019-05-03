@@ -2,9 +2,13 @@ package graphqlws
 
 import (
 	"encoding/json"
+	"net"
+	"runtime"
 	"sync"
+	"sync/atomic"
 	"time"
 
+	"github.com/gofrs/uuid"
 	"github.com/gorilla/websocket"
 	"github.com/lab259/graphql"
 	"github.com/lab259/graphql/language/parser"
@@ -25,6 +29,10 @@ var (
 	operationMessageEOF = &OperationMessage{}
 )
 
+var (
+	ConnectionCount int64
+)
+
 type Conn struct {
 	Logger           rlog.Logger
 	Schema           *graphql.Schema
@@ -38,18 +46,23 @@ type Conn struct {
 }
 
 // NewConn initializes a `Conn` instance.
-func NewConn(conn *websocket.Conn, schema *graphql.Schema, config *Config) *Conn {
+func NewConn(conn *websocket.Conn, schema *graphql.Schema, config *Config) (*Conn, error) {
+	connID, err := uuid.NewV4()
+	if err != nil {
+		return nil, err
+	}
 	c := &Conn{
 		Schema:           schema,
 		config:           config,
-		Logger:           rlog.WithFields(nil), // TODO To add the connection ID here.
+		Logger:           rlog.WithField("connID", connID.String()),
 		conn:             conn,
 		outgoingMessages: make(chan *OperationMessage, 10),
 		handlers:         make([]Handler, 0, 3),
 	}
+	atomic.AddInt64(&ConnectionCount, 1)
 	go c.readPump()
 	go c.writePump()
-	return c
+	return c, nil
 }
 
 // AddHandler adds a `Handler` to the connection.
@@ -139,8 +152,15 @@ func (c *Conn) sendOperationErrors(id string, errs []error) error {
 }
 
 func (c *Conn) close() {
+	if c.state == connStateClosed {
+		c.Logger.Debug("ignoring close: already closed")
+		return
+	}
+	atomic.AddInt64(&ConnectionCount, -1)
+	c.Logger.Trace(TraceLevelConnectionEvents, "trying to close ", c.conn.RemoteAddr())
 	_ = c.conn.Close()
 	c.state = connStateClosed
+
 }
 
 func (c *Conn) pongHandler(message string) error {
@@ -165,8 +185,14 @@ func (c *Conn) pongHandler(message string) error {
 	return nil
 }
 
-// closeHandler
+// closeHandler is called when the connection is closed by the peer.
 func (c *Conn) closeHandler(code int, text string) error {
+	c.Logger.Trace(TraceLevelConnectionEvents, "closing: ", c.conn.RemoteAddr())
+
+	atomic.AddInt64(&ConnectionCount, -1)
+
+	c.state = connStateClosed
+
 	defaultPrevented := false
 	// Go through the handlers and call all `WebsocketCloseHandler`s found.
 	for _, handler := range c.handlers {
@@ -191,7 +217,7 @@ func (c *Conn) closeHandler(code int, text string) error {
 	if defaultPrevented {
 		return nil
 	}
-	return c.conn.WriteControl(websocket.CloseMessage, websocket.FormatCloseMessage(code, text), time.Now().Add(*c.config.WriteTimeout))
+	return nil
 }
 
 func (c *Conn) recover(t RWType) {
@@ -223,7 +249,13 @@ func (c *Conn) recover(t RWType) {
 			return
 		}
 
-		// TODO
+		stack := make([]byte, 2048)
+		n := runtime.Stack(stack, false)
+		c.Logger.WithField("stack", string(stack[:n])).Error("panicked: ", r)
+
+		if r == "repeated read on failed websocket connection" { // Yep... This is the only way to get it done.
+			//
+		}
 	}
 }
 
@@ -368,10 +400,28 @@ func (c *Conn) readPumpIteration() {
 
 	var operationMessage OperationMessage
 	err := c.conn.ReadJSON(&operationMessage)
-	if err != nil {
-		// TODO
-		panic(err)
+	switch err.(type) {
+	// These errors stops the connection.
+	case *websocket.CloseError, *net.OpError:
+		c.close()
+		return
+	case net.Error:
+		nErr := err.(net.Error)
+		if !nErr.Timeout() { // If !Timeout we should log it. Otherwise, it will be ignored.
+			panic(err)
+		}
+	default:
+		if err != nil {
+			// This error just stop the iteration.
+			panic(err)
+		}
 	}
+
+	c.Logger.WithFields(rlog.Fields{
+		"id":      operationMessage.ID,
+		"type":    operationMessage.Type,
+		"payload": string(operationMessage.Payload),
+	}).Trace(TraceLevelConnectionEvents, "packet arrived.")
 
 	switch operationMessage.Type {
 	case gqlTypeConnectionInit:
@@ -380,6 +430,8 @@ func (c *Conn) readPumpIteration() {
 		if c.state != connStateInitializing {
 			panic(ErrReinitializationForbidden)
 		}
+
+		c.Logger.Trace(TraceLevelInternalGQLMessages, "gqlConnectionInit: ", string(operationMessage.Payload))
 
 		var connectionInit GQLConnectionInit
 		// Unmarshals the income payload into a `GQLConnectionInit`
@@ -426,6 +478,8 @@ func (c *Conn) readPumpIteration() {
 	case gqlTypeConnectionTerminate:
 		var terminate GQLConnectionTerminate
 
+		c.Logger.Trace(TraceLevelInternalGQLMessages, "gqlConnectionTerminate")
+
 		// No need to unmarshal a `GQLConnectionTerminate`. The protocol does not define anything.
 		// So, why does it exists? Because future improvements might add something there. So it is
 		// added to provide further extension witout making it incompatible.
@@ -455,6 +509,9 @@ func (c *Conn) readPumpIteration() {
 		if c.state == connStateEstablished {
 			panic(ErrConnectionNotFullyEstablished)
 		}
+
+		c.Logger.Trace(TraceLevelInternalGQLMessages, "gqlStart: ", string(operationMessage.Payload))
+
 		var start GQLStart
 		err = json.Unmarshal(operationMessage.Payload, &start)
 		if err != nil {
@@ -468,6 +525,8 @@ func (c *Conn) readPumpIteration() {
 
 		c.gqlStart(&start)
 	case gqlTypeStop:
+		c.Logger.Trace(TraceLevelInternalGQLMessages, "gqlStop: ", string(operationMessage.Payload))
+
 		var stop GQLStop
 		err = json.Unmarshal(operationMessage.Payload, &stop)
 		if err != nil {
@@ -482,6 +541,9 @@ func (c *Conn) readPumpIteration() {
 }
 
 func (c *Conn) readPump() {
+	defer func() {
+		c.Logger.Debug("leaving readPump")
+	}()
 	defer c.close()
 
 	c.state = connStateInitializing
@@ -494,59 +556,66 @@ func (c *Conn) readPump() {
 	c.conn.SetPongHandler(c.pongHandler)
 	c.conn.SetCloseHandler(c.closeHandler)
 
+	c.Logger.Trace(TraceLevelConnectionEvents, "New connection from ", c.conn.RemoteAddr())
+
 	for c.state != connStateClosed {
 		c.conn.SetReadDeadline(time.Now().Add(*c.config.PongWait))
 		c.readPumpIteration()
 	}
 }
 
-func (c *Conn) writePumpIteration() {
+var emptyBytes = []byte{}
+
+func (c *Conn) writePump() {
+	defer func() {
+		c.Logger.Debug("leaving writePump")
+	}()
+	defer c.close()
 	defer c.recover(Write)
 
-	// Ensure the channel is closed before leaving.
+	pingTicker := time.NewTicker((*c.config.PongWait * 9) / 10)
 	defer func() {
-		// Ensure it is safe to close the channel.
+		pingTicker.Stop()
+
+		// Ensure the channel is closed before leaving.
 		if c.outgoingMessages != nil {
+			// Ensure it is safe to close the channel.
 			close(c.outgoingMessages)
 			c.outgoingMessages = nil
 		}
 	}()
 
-	select {
-	// Waits until receive a message to be sent.
-	case operationMessage, ok := <-c.outgoingMessages:
-		if !ok {
-			return
-		}
-		// Well, if this is a EOF, it means that the connection was
-		if operationMessage == operationMessageEOF {
-			return
-		}
-		// Schedule a possible write timeout.
-		err := c.conn.SetWriteDeadline(time.Now().Add(*c.config.WriteTimeout))
-		if err != nil {
-			panic(err)
-		}
-		// Actually writes the response to the websocket connection.
-		c.conn.WriteJSON(operationMessage)
-	// In case it takes too long to detect a message to be written, we should
-	// send a PING to keep the connection open.
-	case <-time.After((*c.config.PongWait * 9) / 10):
-		err := c.conn.SetWriteDeadline(time.Now().Add(*c.config.WriteTimeout))
-		if err != nil {
-			panic(err)
-		}
-		err = c.conn.WriteMessage(websocket.PingMessage, nil)
-		if err != nil {
-			// TODO
-		}
-	}
-}
-
-func (c *Conn) writePump() {
-	defer c.close()
-
 	for c.state != connStateClosed {
-		c.writePumpIteration()
+		select {
+		// Waits until receive a message to be sent.
+		case operationMessage, ok := <-c.outgoingMessages:
+			if !ok {
+				return
+			}
+			// Well, if this is a EOF, it means that the connection was
+			if operationMessage == operationMessageEOF {
+				return
+			}
+			// Schedule a possible write timeout.
+			err := c.conn.SetWriteDeadline(time.Now().Add(*c.config.WriteTimeout))
+			if err != nil {
+				panic(err)
+			}
+			// Actually writes the response to the websocket connection.
+			c.conn.WriteJSON(operationMessage)
+		// In case it takes too long to detect a message to be written, we should
+		// send a PING to keep the connection open.
+		case <-pingTicker.C:
+			err := c.conn.SetWriteDeadline(time.Now().Add(*c.config.WriteTimeout))
+			if err != nil {
+				panic(err)
+			}
+			err = c.conn.WriteMessage(websocket.PingMessage, emptyBytes)
+			if err != nil {
+				// If cannot write the WriteMessage, the connection
+				// should be closed.
+				return
+			}
+		}
 	}
 }
