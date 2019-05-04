@@ -1,0 +1,27 @@
+config:
+  target: "ws://localhost:40385/subscriptions"
+  phases:
+    - duration: 10  # Test for 60 seconds
+      arrivalRate: 100 # Every second, add 100 users
+      rampTo: 10000 # And ramp it up to 1000 users in total over the 60s period
+      name: "Extreme load"
+    - duration: 60  # Test for 60 seconds
+      arrivalRate: 100 # Every second, add 100 users
+      rampTo: 5000 # And ramp it up to 1000 users in total over the 60s period
+      name: "Ramping up the load"
+    - duration: 120
+      arrivalRate: 100
+      rampTo: 5000
+      name: "Pushing a constant load"
+  ws:
+    # Set a custom subprotocol:
+    subprotocols:
+      - graphql-ws
+scenarios:
+  - engine: "ws"
+    flow:
+      - send:
+          type: "connection_init"
+          payload:
+            user": "Jota"
+      - think: 1 # Every connection will remain open for 1s

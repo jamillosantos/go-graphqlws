@@ -8,7 +8,9 @@ GOPATHCMD=GOPATH=$(GOPATH)
 COVERDIR=$(CURDIR)/.cover
 COVERAGEFILE=$(COVERDIR)/cover.out
 
-.PHONY: test test-watch coverage coverage-ci coverage-html dep-ensure dep-update vet lint fmt
+EXAMPLES = $(shell ls examples)
+
+.PHONY: test test-watch coverage coverage-ci coverage-html dep-ensure dep-update vet lint fmt benchmark-load install-examples example-echo-server
 
 test:
 	@${GOPATHCMD} ginkgo --failFast ./...
@@ -48,3 +50,20 @@ lint:
 
 fmt:
 	@$(GOPATHCMD) go fmt ./...
+
+benchmark-load:
+ifndef SCENARIO
+	@echo "Please define SCENARIO"
+	@echo "make benchmark SCENARIO=<scenarios from './artillary' folder>"
+else
+	artillery run ./artillery/$(SCENARIO)
+endif
+
+install-examples:
+ifdef PROFILER
+	$(eval EXTRAARGS=)
+endif
+	@$(foreach example,$(EXAMPLES),GOBIN=$(CURDIR)/bin $(GOPATHCMD) go install "-ldflags=$(LDFLAGS)" $(EXTRAARGS) -v ./examples/$(example) &&) :
+
+example-echo-server: install-examples
+	RLOG_LOG_LEVEL=DEBUG ./bin/echo-server

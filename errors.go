@@ -24,6 +24,10 @@ var (
 	// ErrInvalidTopic is triggered when a `Subscriber.SubscriberSubscribe`
 	// receives an invalid `Topic`.
 	ErrInvalidTopic = errors.New("invalid topic")
+
+	// ErrInvalidSubscriber is triggered when a `graphql.SubscribeParams.Subscriber`
+	// is not a instance that implements the `graphqlws.Subscriber` interface.
+	ErrInvalidSubscriber = errors.New("invalid subscriber")
 )
 
 type HandlerError struct {

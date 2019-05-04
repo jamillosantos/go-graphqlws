@@ -2,10 +2,15 @@
   source = "https://github.com/fsnotify/fsnotify/archive/v1.4.7.tar.gz"
   name = "gopkg.in/fsnotify.v1"
 
-[[override]]
+[[constraint]]
+  name = "github.com/lab259/graphql"
+  branch = "dev"
+
+[[constraint]]
   name = "github.com/graphql-go/graphql"
   source = "github.com/lab259/graphql"
-  
+  branch = "master"
+
 [[constraint]]
   name = "github.com/gorilla/websocket"
   version = "1.4.0"

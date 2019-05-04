@@ -156,11 +156,28 @@ func (c *Conn) close() {
 		c.Logger.Debug("ignoring close: already closed")
 		return
 	}
+
+	// Go through the handlers and call all `WebsocketCloseHandler`s found.
+	for _, handler := range c.handlers {
+		h, ok := handler.(WebsocketCloseHandler)
+		if !ok { // If not a `ConnectionStartHandler` try next.
+			continue
+		}
+		err := h.HandleWebsocketClose(0, "")
+		hErr, ok := err.(*HandlerError)
+		if ok {
+			if hErr.propagationStopped {
+				break
+			}
+		} else if err != nil {
+			return
+		}
+	}
+
 	atomic.AddInt64(&ConnectionCount, -1)
 	c.Logger.Trace(TraceLevelConnectionEvents, "trying to close ", c.conn.RemoteAddr())
 	_ = c.conn.Close()
 	c.state = connStateClosed
-
 }
 
 func (c *Conn) pongHandler(message string) error {
@@ -187,13 +204,14 @@ func (c *Conn) pongHandler(message string) error {
 
 // closeHandler is called when the connection is closed by the peer.
 func (c *Conn) closeHandler(code int, text string) error {
-	c.Logger.Trace(TraceLevelConnectionEvents, "closing: ", c.conn.RemoteAddr())
-
-	atomic.AddInt64(&ConnectionCount, -1)
+	c.Logger.Trace(TraceLevelConnectionEvents, "closeHandler: closing: ", c.conn.RemoteAddr())
+	defer func() {
+		c.Logger.Trace(TraceLevelConnectionEvents, "closeHandler: defer closing: ", c.conn.RemoteAddr())
+	}()
 
 	c.state = connStateClosed
+	atomic.AddInt64(&ConnectionCount, -1)
 
-	defaultPrevented := false
 	// Go through the handlers and call all `WebsocketCloseHandler`s found.
 	for _, handler := range c.handlers {
 		h, ok := handler.(WebsocketCloseHandler)
@@ -203,20 +221,15 @@ func (c *Conn) closeHandler(code int, text string) error {
 		err := h.HandleWebsocketClose(code, text)
 		hErr, ok := err.(*HandlerError)
 		if ok {
-			if hErr.defaultPrevented {
-				defaultPrevented = true
-			}
 			if hErr.propagationStopped {
 				break
 			}
 		} else if err != nil {
+			c.Logger.Error("failed to HandleWebsocketClose: ", err)
 			return err
 		}
 	}
 
-	if defaultPrevented {
-		return nil
-	}
 	return nil
 }
 
@@ -275,7 +288,7 @@ func (c *Conn) gqlStart(start *GQLStart) {
 	for _, handler := range c.handlers {
 		h, ok := handler.(ConnectionStartHandler)
 		if !ok { // If not a `ConnectionStartHandler` try next.
-			return
+			continue
 		}
 		errsIn := h.HandleConnectionStart(start)
 		if len(errs) > 0 { // Keep aggregating errors
@@ -300,6 +313,7 @@ func (c *Conn) gqlStart(start *GQLStart) {
 		Variables:     start.Payload.Variables,
 		OperationName: start.Payload.OperationName,
 		Connection:    c,
+		Schema:        c.Schema,
 	}
 
 	logger := c.Logger.WithFields(rlog.Fields{
@@ -403,15 +417,18 @@ func (c *Conn) readPumpIteration() {
 	switch err.(type) {
 	// These errors stops the connection.
 	case *websocket.CloseError, *net.OpError:
+		c.Logger.Error("*websocket.CloseError, *net.OpError: ", err)
 		c.close()
 		return
 	case net.Error:
+		c.Logger.Error("net.Error: ", err)
 		nErr := err.(net.Error)
 		if !nErr.Timeout() { // If !Timeout we should log it. Otherwise, it will be ignored.
 			panic(err)
 		}
 	default:
 		if err != nil {
+			c.Logger.Error("default: ", err)
 			// This error just stop the iteration.
 			panic(err)
 		}
@@ -426,19 +443,15 @@ func (c *Conn) readPumpIteration() {
 	switch operationMessage.Type {
 	case gqlTypeConnectionInit:
 		// If the connection is not initializing, it is a protocol error and the
-		// connection should be reset.
+		// connection should be reset.X
 		if c.state != connStateInitializing {
 			panic(ErrReinitializationForbidden)
 		}
 
 		c.Logger.Trace(TraceLevelInternalGQLMessages, "gqlConnectionInit: ", string(operationMessage.Payload))
 
-		var connectionInit GQLConnectionInit
-		// Unmarshals the income payload into a `GQLConnectionInit`
-		err = json.Unmarshal(operationMessage.Payload, &connectionInit)
-		if err != nil {
-			// TODO
-			panic(err)
+		connectionInit := GQLConnectionInit{
+			Payload: operationMessage.Payload,
 		}
 
 		defaultPrevented := false
@@ -466,15 +479,17 @@ func (c *Conn) readPumpIteration() {
 			}
 		}
 
+		// Now the handshake is done.
+		c.state = connStateEstablished
+
+		c.Logger.Info("connection established")
+
 		if defaultPrevented {
 			return
 		}
 
 		// Add message to be sent for the writePump
 		c.outgoingMessages <- gqlConnectionAck
-
-		// Now the handshake is done.
-		c.state = connStateEstablished
 	case gqlTypeConnectionTerminate:
 		var terminate GQLConnectionTerminate
 
@@ -506,14 +521,16 @@ func (c *Conn) readPumpIteration() {
 
 		return // Bye bye readPump
 	case gqlTypeStart:
-		if c.state == connStateEstablished {
+		if c.state != connStateEstablished {
 			panic(ErrConnectionNotFullyEstablished)
 		}
 
 		c.Logger.Trace(TraceLevelInternalGQLMessages, "gqlStart: ", string(operationMessage.Payload))
 
-		var start GQLStart
-		err = json.Unmarshal(operationMessage.Payload, &start)
+		start := GQLStart{
+			ID: operationMessage.ID,
+		}
+		err = json.Unmarshal(operationMessage.Payload, &start.Payload)
 		if err != nil {
 			c.Logger.Error("failed to unmarshal the payload at gqlStart: ", err)
 			err = c.sendOperationErrors(start.ID, []error{err})
@@ -618,4 +635,13 @@ func (c *Conn) writePump() {
 			}
 		}
 	}
+}
+
+// Close finishes the connection.
+func (c *Conn) Close() {
+	if c.state == connStateClosed {
+		return
+	}
+	_ = c.conn.WriteControl(websocket.CloseMessage, nil, time.Now().Add(*c.config.WriteTimeout))
+	c.close()
 }

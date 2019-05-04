@@ -10,22 +10,23 @@ import (
 )
 
 type subscriptionRedisReader struct {
-	subscription *graphqlws.Subscription
-	handler      *redisSubscriptionHandler
-	state        readerState
-	pubSubConn   *redis.PubSubConn
+	subscription       *graphqlws.Subscription
+	handler            *redisSubscriptionHandler
+	state              readerState
+	pubSubConn         *redis.PubSubConn
+	subscriptionErrors int
 }
 
-func (reader *subscriptionRedisReader) readPump() {
+func (reader *subscriptionRedisReader) readPump(subscriber graphqlws.Subscriber) {
 	// TODO Add crash protection.
 
 	reader.state = readerStateRunning
 	for reader.state != readerStateClosed {
-		reader.readLoop()
+		reader.readLoop(subscriber)
 	}
 }
 
-func (reader *subscriptionRedisReader) readLoop() {
+func (reader *subscriptionRedisReader) readLoop(subscriber graphqlws.Subscriber) {
 	conn := reader.handler.pool.Get()
 	if conn.Err() != nil {
 		return
@@ -35,6 +36,28 @@ func (reader *subscriptionRedisReader) readLoop() {
 	}()
 
 	pubSubConn := &redis.PubSubConn{Conn: conn}
+
+	topics := make([]interface{}, len(subscriber.Topics()))
+	for i, topic := range subscriber.Topics() {
+		topics[i] = topic
+	}
+	err := pubSubConn.Subscribe(topics...)
+	if err != nil {
+		// Increase the subscriptionErrors
+		reader.subscriptionErrors++
+		// If we get more than 3 subscriptionErrors in a row, we close the
+		// connection.
+		if reader.subscriptionErrors > 3 {
+			reader.handler.conn.Close()
+		}
+		return
+	}
+
+	reader.handler.conn.Logger.Debug("subscribed to ", topics)
+
+	// The subscription errors are reset
+	reader.subscriptionErrors = 0
+
 	reader.pubSubConn = pubSubConn
 	for reader.state != readerStateClosed {
 		err := reader.readIteration(pubSubConn)
@@ -50,6 +73,7 @@ func (reader *subscriptionRedisReader) readIteration(conn *redis.PubSubConn) err
 	switch m := msg.(type) {
 	case redis.Message:
 		ctx := context.WithValue(context.Background(), m.Channel, m.Data)
+		reader.subscription.Connection.Logger.Trace(graphqlws.TraceLevelInternalGQLMessages, "fromRedis: ", m.Channel, " ", string(m.Data))
 
 		r := graphql.Execute(graphql.ExecuteParams{
 			OperationName: reader.subscription.OperationName,
@@ -77,6 +101,9 @@ func (reader *subscriptionRedisReader) readIteration(conn *redis.PubSubConn) err
 }
 
 func (reader *subscriptionRedisReader) close() {
+	if reader.state == readerStateClosed {
+		return
+	}
 	reader.state = readerStateClosed
 	if reader.pubSubConn != nil {
 		_ = reader.pubSubConn.Close()

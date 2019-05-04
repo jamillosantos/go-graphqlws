@@ -4,7 +4,8 @@ import (
 	"encoding/json"
 	"errors"
 
-	"github.com/graphql-go/graphql/language/ast"
+	"github.com/lab259/graphql"
+	"github.com/lab259/graphql/language/ast"
 )
 
 var (
@@ -43,6 +44,7 @@ type Subscription struct {
 	OperationName string
 	Document      *ast.Document
 	Fields        []string
+	Schema        *graphql.Schema
 	Connection    *Conn
 }
 

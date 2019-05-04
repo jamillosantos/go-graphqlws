@@ -57,6 +57,13 @@ func (subscriber *subscriber) Topics() []Topic {
 }
 
 func (subscriber *subscriber) Subscribe(topic Topic) error {
+	// Check if the topic is already in the list.
+	for _, t := range subscriber.topics {
+		if t == topic {
+			// It is already in the list. Fine.
+			return nil
+		}
+	}
 	subscriber.topics = append(subscriber.topics, topic)
 	return nil
 }

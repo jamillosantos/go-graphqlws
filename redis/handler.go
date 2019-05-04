@@ -1,9 +1,11 @@
 package redis
 
 import (
+	"fmt"
 	"sync"
 
 	"github.com/gomodule/redigo/redis"
+	"github.com/lab259/graphql"
 
 	"github.com/jamillosantos/go-graphqlws"
 )
@@ -35,7 +37,6 @@ func NewSubscriptionHandler(conn *graphqlws.Conn, pool *redis.Pool) Subscription
 		conn: conn,
 		pool: pool,
 	}
-	conn.AddHandler(handler)
 	return handler
 }
 
@@ -44,8 +45,33 @@ func (handler *redisSubscriptionHandler) HandleSubscriptionStart(subscription *g
 		subscription: subscription,
 		handler:      handler,
 	}
+
+	handler.conn.Logger.Debug("fields: ", subscription.Fields)
+
+	subscriber := graphqlws.NewSubscriber()
+	fieldsMap := subscription.Schema.SubscriptionType().Fields()
+	for _, field := range subscription.Fields {
+		subscriptionField, ok := fieldsMap[field]
+		if !ok {
+			return fmt.Errorf("field 'subscriptions.%s' was not found", field)
+		}
+		if subscriptionField.Subscribe == nil {
+			return fmt.Errorf("'subscriptions.%s.Subscribe' is not defined", field)
+		}
+
+		err := subscriptionField.Subscribe(graphql.SubscribeParams{
+			SubscriptionID: subscription.ID,
+			Variables:      subscription.Variables,
+			OperationName:  subscription.OperationName,
+			Subscriber:     subscriber,
+		})
+		if err != nil {
+			return err
+		}
+	}
+
 	handler.subscriptions.Store(subscription.ID, subsr)
-	go subsr.readPump()
+	go subsr.readPump(subscriber)
 	return nil
 }
 
