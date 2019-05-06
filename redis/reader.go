@@ -10,6 +10,11 @@ import (
 	"github.com/jamillosantos/go-graphqlws"
 )
 
+var (
+	ConnectionContextKey   = "__graphqlws.connection"
+	SubscriptionContextKey = "__graphqlws.subscription"
+)
+
 type subscriptionRedisReader struct {
 	subscription       *graphqlws.Subscription
 	handler            *redisSubscriptionHandler
@@ -25,13 +30,23 @@ func (reader *subscriptionRedisReader) readPump(subscriber graphqlws.Subscriber)
 	}()
 	// TODO Add crash protection.
 
+	ctx := context.WithValue(
+		context.WithValue(
+			context.Background(),
+			ConnectionContextKey,
+			reader.subscription.Connection,
+		),
+		SubscriptionContextKey,
+		reader.subscription,
+	)
+
 	reader.setState(readerStateRunning)
 	for reader.getState() != readerStateClosed {
-		reader.readLoop(subscriber)
+		reader.readLoop(ctx, subscriber)
 	}
 }
 
-func (reader *subscriptionRedisReader) readLoop(subscriber graphqlws.Subscriber) {
+func (reader *subscriptionRedisReader) readLoop(ctx context.Context, subscriber graphqlws.Subscriber) {
 	conn, err := reader.handler.dialer.Dial()
 	if err != nil {
 		reader.subscription.Logger.Error("error getting a redis conn: ", err)
@@ -67,7 +82,7 @@ func (reader *subscriptionRedisReader) readLoop(subscriber graphqlws.Subscriber)
 
 	reader.pubSubConn = pubSubConn
 	for reader.getState() != readerStateClosed {
-		err := reader.readIteration()
+		err := reader.readIteration(ctx)
 		if err != nil {
 			reader.subscription.Logger.Error("error reading from redis: ", err)
 			return
@@ -75,12 +90,12 @@ func (reader *subscriptionRedisReader) readLoop(subscriber graphqlws.Subscriber)
 	}
 }
 
-func (reader *subscriptionRedisReader) readIteration() error {
+func (reader *subscriptionRedisReader) readIteration(ctx context.Context) error {
 	defer reader.subscription.Logger.Info("defer subscriptionRedisReader:readIteration")
 	msg := reader.pubSubConn.Receive()
 	switch m := msg.(type) {
 	case redis.Message:
-		ctx := context.WithValue(context.Background(), m.Channel, m.Data)
+		ctx := context.WithValue(ctx, m.Channel, m.Data)
 		reader.subscription.Logger.Trace(graphqlws.TraceLevelInternalGQLMessages, "fromRedis: ", m.Channel, " ", string(m.Data))
 
 		r := graphql.Execute(graphql.ExecuteParams{
