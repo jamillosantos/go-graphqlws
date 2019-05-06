@@ -264,31 +264,24 @@ func (c *Conn) closeHandler(code int, text string) error {
 
 func (c *Conn) recover(t RWType) {
 	if r := recover(); r != nil {
-		defaultPrevented := false
+		// This event cannot be default prevented.
 
-		c.lockHandlers(func() error {
-			// Broadcast the message to all handlers attached.
-			for _, handler := range c.handlers {
-				// Of course, only `SystemRecoverHandler` will be called.
-				h, ok := handler.(SystemRecoverHandler)
-				if !ok {
-					continue
-				}
-				err := h.HandlePanic(t, r)
-				if hErr, ok := err.(*HandlerError); ok {
-					if hErr.defaultPrevented {
-						defaultPrevented = true
-					}
-					if hErr.propagationStopped {
-						break
-					}
-				} else if err != nil {
-					// TODO
-					return nil
+		// In this case, lock handlers will do no good.
+		//
+		// Broadcast the message to all handlers attached.
+		for _, handler := range c.handlers {
+			// Of course, only `SystemRecoverHandler` will be called.
+			h, ok := handler.(SystemRecoverHandler)
+			if !ok {
+				continue
+			}
+			err := h.HandlePanic(t, r)
+			if hErr, ok := err.(*HandlerError); ok {
+				if hErr.propagationStopped {
+					break
 				}
 			}
-			return nil
-		})
+		}
 
 		stack := make([]byte, 2048)
 		n := runtime.Stack(stack, false)
