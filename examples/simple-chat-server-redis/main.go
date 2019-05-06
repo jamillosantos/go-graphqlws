@@ -33,6 +33,9 @@ type Message struct {
 	User *User  `json:"user"`
 }
 
+// connectionHandler implements the `WebsocketCloseHandler` and `ConnectionInitHandler`
+// interfaces and will be binded to the `graphqlws.Conn` as new connections
+// arrive.
 type connectionHandler struct {
 	conn          *graphqlws.Conn
 	user          User
@@ -40,12 +43,17 @@ type connectionHandler struct {
 	broadcastJoin func(user *User)
 }
 
+// HandleWebsocketClose will broadcast the messaage through Redis pubsub the
+// message that a user left the chat.
 func (handler *connectionHandler) HandleWebsocketClose(code int, text string) error {
 	handler.broadcastLeft(&handler.user)
 	delete(users, handler.user.Name)
 	return nil
 }
 
+// HandleConnectionInit evaluates the payload sent by the `connection_init`
+// package (check the graphqws protocol). Then, it validates it and broadcasts
+// the message that the user joined the chat room.
 func (handler *connectionHandler) HandleConnectionInit(init *graphqlws.GQLConnectionInit) error {
 	var at AuthToken
 	err := json.Unmarshal(init.Payload, &at)
@@ -68,6 +76,9 @@ var users = make(map[string]*User)
 func main() {
 	rlog.Info("Starting example server")
 
+	// Initializes the redis Pool
+	//
+	// The pool is used to publish messages.
 	redisPool := &redis.Pool{
 		Dial: func() (conn redis.Conn, e error) {
 			return redis.Dial("tcp", "localhost:6379")
@@ -84,8 +95,12 @@ func main() {
 		},
 	}
 
+	// Initializes the redis dialer
+	//
+	// The Dialer is used to create the Pubsub connections.
 	redisDialer := graphqlRedis.NewDialer("tcp", "localhost:6379")
 
+	// Test if the redis server is up and we can get response ...
 	rlog.Info("Testing redis...")
 	func() {
 		redisConn, err := redisDialer.Dial()
@@ -93,7 +108,9 @@ func main() {
 			rlog.Critical("error dialing to the redis server: ", err)
 			os.Exit(1)
 		}
-		defer redisConn.Close()
+		defer func() {
+			_ = redisConn.Close()
+		}()
 		_, err = redisConn.Do("PING")
 		if err != nil {
 			rlog.Critical("failed to initialize redis: ", err)
@@ -101,10 +118,13 @@ func main() {
 		}
 	}()
 
+	// This tests the redis servr upon the redisPool.
 	rlog.Info("Testing redis...")
 	func() {
 		redisConn := redisPool.Get()
-		defer redisConn.Close()
+		defer func() {
+			_ = redisConn.Close()
+		}()
 		_, err := redisConn.Do("PING")
 		if err != nil {
 			rlog.Critical("failed to initialize redis: ", err)
@@ -112,6 +132,7 @@ func main() {
 		}
 	}()
 
+	// Defines the UserType for the graphql.
 	userType := graphql.NewObject(graphql.ObjectConfig{
 		Name: "User",
 		Fields: graphql.Fields{
@@ -121,6 +142,7 @@ func main() {
 		},
 	})
 
+	// Defines the MessageType for the graphql.
 	messageType := graphql.NewObject(graphql.ObjectConfig{
 		Name: "Message",
 		Fields: graphql.Fields{
@@ -133,6 +155,7 @@ func main() {
 		},
 	})
 
+	// Defines a non empty rootQuery (it is required by the graphql-go/graphql)
 	rootQuery := graphql.ObjectConfig{Name: "RootQuery", Fields: graphql.Fields{
 		"me": &graphql.Field{
 			Type: userType,
@@ -144,9 +167,12 @@ func main() {
 		},
 	}}
 
+	// Defines the function that will publish data into Redis.
 	broadcast := func(topic graphqlws.Topic, data interface{}) error {
 		redisConn := redisPool.Get()
-		defer redisConn.Close()
+		defer func() {
+			_ = redisConn.Close()
+		}()
 
 		dataJson, err := json.Marshal(data)
 		if err != nil {
@@ -163,7 +189,7 @@ func main() {
 		return nil
 	}
 
-	// Sends this to all subscriptions
+	// broadcastJoin broadcast the message that a has joined the chat room.
 	broadcastJoin := func(user *User) {
 		rlog.Info(user.Name, " joined")
 		err := broadcast(graphqlws.StringTopic("onJoin"), user)
@@ -172,6 +198,7 @@ func main() {
 		}
 	}
 
+	// broadcastLeft broadcast the message that a user has left the chat room.
 	broadcastLeft := func(user *User) {
 		rlog.Info(user.Name, " left")
 		err := broadcast(graphqlws.StringTopic("onLeft"), user)
@@ -180,17 +207,21 @@ func main() {
 		}
 	}
 
+	// broadcastMessage broadcast a message from a user to the chat room.
 	broadcastMessage := func(message *Message) {
 		err := broadcast(graphqlws.StringTopic("onMessage"), message)
 		if err != nil {
 			rlog.Error("failed to broadcastMessage: ", err)
 		}
 	}
+
+	// Define the schema of the graphql
 	schemaConfig := graphql.SchemaConfig{
 		Query: graphql.NewObject(rootQuery),
 		Mutation: graphql.NewObject(graphql.ObjectConfig{
 			Name: "MutationRoot",
 			Fields: graphql.Fields{
+				// This the mutation that sends messages to the server.
 				"send": &graphql.Field{
 					Args: graphql.FieldConfigArgument{
 						"user": &graphql.ArgumentConfig{
@@ -204,6 +235,7 @@ func main() {
 					Resolve: func(p graphql.ResolveParams) (i interface{}, e error) {
 						userName := p.Args["user"].(string)
 
+						// Finds the user in the array.
 						user, ok := users[userName]
 						if !ok {
 							return nil, fmt.Errorf("user '%s' not found", userName)
@@ -217,12 +249,15 @@ func main() {
 							Text: text.(string),
 							User: user,
 						}
+
+						// Broadcast the message to all subscribed users.
 						broadcastMessage(m)
 						return m, nil
 					},
 				},
 			},
 		}),
+		// Define all possible subscriptions
 		Subscription: graphql.NewObject(graphql.ObjectConfig{
 			Name: "SubscriptionRoot",
 			Fields: graphql.Fields{
@@ -241,6 +276,7 @@ func main() {
 						return &user, nil
 					},
 					Subscribe: func(params graphql.SubscribeParams) error {
+						// Subscribe the user in the `onJoin` topic.
 						return params.Subscriber.SubscriberSubscribe(graphqlws.StringTopic("onJoin"))
 					},
 				},
@@ -259,6 +295,7 @@ func main() {
 						return &user, nil
 					},
 					Subscribe: func(params graphql.SubscribeParams) error {
+						// Subscribe the user in the `onLeft` topic.
 						return params.Subscriber.SubscriberSubscribe(graphqlws.StringTopic("onLeft"))
 					},
 				},
@@ -277,18 +314,22 @@ func main() {
 						return &message, nil
 					},
 					Subscribe: func(params graphql.SubscribeParams) error {
+						// Subscribe the user in the `onMessage` topic.
 						return params.Subscriber.SubscriberSubscribe(graphqlws.StringTopic("onMessage"))
 					},
 				},
 			},
 		}),
 	}
+
+	// Creates the schema
 	schema, err := graphql.NewSchema(schemaConfig)
 	if err != nil {
 		rlog.WithField("err", err).Critical("GraphQL schema is invalid")
 		os.Exit(1)
 	}
 
+	// Initializes the graphql http handler.
 	graphqlHandler := handler.New(&handler.Config{
 		Schema:     &schema,
 		Pretty:     true,
@@ -296,6 +337,7 @@ func main() {
 		Playground: true,
 	})
 
+	// Initializes the graphqlws http handler.
 	subscriptionHandler := graphqlws.NewHttpHandler(
 		graphqlws.NewHandlerConfigFactory().
 			Schema(&schema).
@@ -320,6 +362,7 @@ func main() {
 		},
 	)
 
+	// Go routine that will print the number of goroutines each second.
 	go func() {
 		for {
 			rlog.WithField("goRoutines", runtime.NumGoroutine()).Debug("stats")
@@ -327,7 +370,7 @@ func main() {
 		}
 	}()
 
-	// Serve the GraphQL WS endpoint
+	// Serve the GraphQL and GraphQL WS endpoint
 	mux := http.NewServeMux()
 	mux.Handle("/graphql", graphqlHandler)
 	mux.Handle("/subscriptions", subscriptionHandler)
