@@ -67,3 +67,6 @@ endif
 
 example-echo-server: install-examples
 	RLOG_LOG_LEVEL=DEBUG ./bin/echo-server
+
+example-simple-chat-server-redis: install-examples
+	RLOG_LOG_LEVEL=DEBUG ./bin/simple-chat-server-redis

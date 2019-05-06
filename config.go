@@ -17,6 +17,9 @@ const (
 	GB = int64(1024) * MB
 )
 
+// Config holds the configuration for a graphqlws connection.
+//
+// See Also the NewConfigFactory for easily create Config structs.
 type Config struct {
 	// ReadLimit is the maximum size of the buffer used to receive raw messages
 	// from the websocket.
@@ -37,6 +40,7 @@ var (
 	defaultWriteTimeout = time.Second * 15
 )
 
+// DefaultConfig holds de default param initialization values for NewConfigFactory.
 var DefaultConfig = Config{
 	ReadLimit:    &defaultReadLimit,
 	PongWait:     &defaultPongWait,
@@ -47,6 +51,14 @@ type configFactory struct {
 	config Config
 }
 
+// NewConfigFactory creates Config instances using sugar syntax.
+//
+// Example:
+//
+// config := NewConfigFactory().ReadLimit(2048).PongWait(time.Second*60).Build()
+//
+// You can call Build how many times you wish, it will always return a new
+// instance with the same configuration set.
 func NewConfigFactory() *configFactory {
 	return &configFactory{
 		config: DefaultConfig,
@@ -76,7 +88,7 @@ func (cf *configFactory) Build() Config {
 	return cf.config
 }
 
-// HandlerConfig
+// HandlerConfig holds the configuration for the http Handler.
 type HandlerConfig struct {
 	Upgrader WebSocketUpgrader
 	Schema   *graphql.Schema
@@ -86,20 +98,32 @@ type handlerConfigFactory struct {
 	config HandlerConfig
 }
 
+// NewHandlerConfigFactory creates HandlerConfig instances using sugar syntax.
+//
+// Example:
+//
+// config := NewHandlerConfigFactory().Schema(&schemas).Upgrader(upgrader).Build()
+//
+// You can call Build how many times you wish, it will always return a new
+// instance with the same configuration set.
 func NewHandlerConfigFactory() *handlerConfigFactory {
 	return &handlerConfigFactory{}
 }
 
+// Schema sets the value of the `Schema` property of the `HandlerConfig`.
 func (f *handlerConfigFactory) Schema(schema *graphql.Schema) *handlerConfigFactory {
 	f.config.Schema = schema
 	return f
 }
 
+// Upgrader sets the value of the `Upgrader` property of the `HandlerConfig`.
 func (f *handlerConfigFactory) Upgrader(upgrader WebSocketUpgrader) *handlerConfigFactory {
 	f.config.Upgrader = upgrader
 	return f
 }
 
+// Build returns a new instance of the HandlerConfig based on the set properties
+// of the factory.
 func (f *handlerConfigFactory) Build() HandlerConfig {
 	return f.config
 }

@@ -1,7 +1,6 @@
 package main
 
 import (
-	"flag"
 	"net/http"
 	"os"
 	"os/signal"
@@ -11,8 +10,6 @@ import (
 	"github.com/gorilla/websocket"
 	"github.com/lab259/graphql"
 	"github.com/lab259/rlog"
-
-	"github.com/pkg/profile"
 
 	"github.com/jamillosantos/go-graphqlws"
 )
@@ -49,48 +46,7 @@ type Message struct {
 	Text string `json:"text"`
 }
 
-var (
-	cpuprofile = flag.String("cpuprofile", "", "write cpu profile to file")
-	memprofile = flag.String("memprofile", "", "write mem profile to file")
-)
-
 func main() {
-	defer profile.Start(profile.MemProfile, profile.ProfilePath(".")).Stop()
-	/*
-		flag.Parse()
-		if *cpuprofile != "" {
-			f, err := os.Create(*cpuprofile)
-			if err != nil {
-				rlog.Critical("could not create CPU profile: ", err)
-				os.Exit(1)
-			}
-			defer f.Close()
-			if err := pprof.StartCPUProfile(f); err != nil {
-				rlog.Critical("could not start CPU profile: ", err)
-				os.Exit(2)
-			}
-		}
-
-		c := make(chan os.Signal, 1)
-		signal.Notify(c, os.Interrupt)
-		go func() {
-			<-c
-			if *memprofile != "" {
-				f, err := os.Create(*memprofile)
-				if err != nil {
-					rlog.Critical("could not create memory profile: ", err)
-				}
-				defer f.Close()
-				runtime.GC() // get up-to-date statistics
-				if err := pprof.WriteHeapProfile(f); err != nil {
-					rlog.Critical("could not write memory profile: ", err)
-				}
-			}
-			pprof.StopCPUProfile()
-			os.Exit(0)
-		}()
-	*/
-
 	schemaConfig := graphql.SchemaConfig{
 		Query: graphql.NewObject(rootQuery),
 		Mutation: graphql.NewObject(graphql.ObjectConfig{

@@ -37,16 +37,14 @@ type Message struct {
 // interfaces and will be binded to the `graphqlws.Conn` as new connections
 // arrive.
 type connectionHandler struct {
-	conn          *graphqlws.Conn
-	user          User
-	broadcastLeft func(user *User)
-	broadcastJoin func(user *User)
+	conn *graphqlws.Conn
+	user User
 }
 
 // HandleWebsocketClose will broadcast the messaage through Redis pubsub the
 // message that a user left the chat.
 func (handler *connectionHandler) HandleWebsocketClose(code int, text string) error {
-	handler.broadcastLeft(&handler.user)
+	broadcastLeft(&handler.user)
 	delete(users, handler.user.Name)
 	return nil
 }
@@ -67,19 +65,76 @@ func (handler *connectionHandler) HandleConnectionInit(init *graphqlws.GQLConnec
 
 	users[handler.user.Name] = &handler.user
 
-	handler.broadcastJoin(&handler.user)
+	broadcastJoin(&handler.user)
 	return nil
 }
 
-var users = make(map[string]*User)
+var (
+	users       = make(map[string]*User)
+	redisPool   *redis.Pool
+	redisDialer graphqlRedis.Dialer
+)
+
+// broadcast defines the function that will publish data into Redis.
+func broadcast(topic graphqlws.Topic, data interface{}) error {
+	redisConn := redisPool.Get()
+	defer func() {
+		_ = redisConn.Close()
+	}()
+
+	dataJson, err := json.Marshal(data)
+	if err != nil {
+		return err
+	}
+
+	rlog.Info("broadcasting to ", topic, ": ", string(dataJson))
+
+	_, err = redisConn.Do("PUBLISH", topic, dataJson)
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// broadcastJoin broadcast the message that a has joined the chat room.
+func broadcastJoin(user *User) {
+	rlog.Info(user.Name, " joined")
+	err := broadcast(graphqlws.StringTopic("onJoin"), user)
+	if err != nil {
+		rlog.Error("failed to broadcastJoin: ", err)
+	}
+}
+
+// broadcastLeft broadcast the message that a user has left the chat room.
+func broadcastLeft(user *User) {
+	rlog.Info(user.Name, " left")
+	err := broadcast(graphqlws.StringTopic("onLeft"), user)
+	if err != nil {
+		rlog.Error("failed to broadcastLeft: ", err)
+	}
+}
+
+// broadcastMessage broadcast a message from a user to the chat room.
+func broadcastMessage(message *Message) {
+	err := broadcast(graphqlws.StringTopic("onMessage"), message)
+	if err != nil {
+		rlog.Error("failed to broadcastMessage: ", err)
+	}
+}
 
 func main() {
 	rlog.Info("Starting example server")
 
+	// If you are comming from the main README of the repo this is the:
+	//
+	// Step 1: Initialize your preferred PubSub technology;
+	// -------------------------------------------------------------------------
+
 	// Initializes the redis Pool
 	//
 	// The pool is used to publish messages.
-	redisPool := &redis.Pool{
+	redisPool = &redis.Pool{
 		Dial: func() (conn redis.Conn, e error) {
 			return redis.Dial("tcp", "localhost:6379")
 		},
@@ -98,7 +153,7 @@ func main() {
 	// Initializes the redis dialer
 	//
 	// The Dialer is used to create the Pubsub connections.
-	redisDialer := graphqlRedis.NewDialer("tcp", "localhost:6379")
+	redisDialer = graphqlRedis.NewDialer("tcp", "localhost:6379")
 
 	// Test if the redis server is up and we can get response ...
 	rlog.Info("Testing redis...")
@@ -118,7 +173,7 @@ func main() {
 		}
 	}()
 
-	// This tests the redis servr upon the redisPool.
+	// This tests the redis server upon the redisPool.
 	rlog.Info("Testing redis...")
 	func() {
 		redisConn := redisPool.Get()
@@ -131,6 +186,9 @@ func main() {
 			os.Exit(1)
 		}
 	}()
+
+	// Step 2: Graphql Schema definition;
+	// -------------------------------------------------------------------------
 
 	// Defines the UserType for the graphql.
 	userType := graphql.NewObject(graphql.ObjectConfig{
@@ -166,54 +224,6 @@ func main() {
 			},
 		},
 	}}
-
-	// Defines the function that will publish data into Redis.
-	broadcast := func(topic graphqlws.Topic, data interface{}) error {
-		redisConn := redisPool.Get()
-		defer func() {
-			_ = redisConn.Close()
-		}()
-
-		dataJson, err := json.Marshal(data)
-		if err != nil {
-			return err
-		}
-
-		rlog.Info("broadcasting to ", topic, ": ", string(dataJson))
-
-		_, err = redisConn.Do("PUBLISH", topic, dataJson)
-		if err != nil {
-			return err
-		}
-
-		return nil
-	}
-
-	// broadcastJoin broadcast the message that a has joined the chat room.
-	broadcastJoin := func(user *User) {
-		rlog.Info(user.Name, " joined")
-		err := broadcast(graphqlws.StringTopic("onJoin"), user)
-		if err != nil {
-			rlog.Error("failed to broadcastJoin: ", err)
-		}
-	}
-
-	// broadcastLeft broadcast the message that a user has left the chat room.
-	broadcastLeft := func(user *User) {
-		rlog.Info(user.Name, " left")
-		err := broadcast(graphqlws.StringTopic("onLeft"), user)
-		if err != nil {
-			rlog.Error("failed to broadcastLeft: ", err)
-		}
-	}
-
-	// broadcastMessage broadcast a message from a user to the chat room.
-	broadcastMessage := func(message *Message) {
-		err := broadcast(graphqlws.StringTopic("onMessage"), message)
-		if err != nil {
-			rlog.Error("failed to broadcastMessage: ", err)
-		}
-	}
 
 	// Define the schema of the graphql
 	schemaConfig := graphql.SchemaConfig{
@@ -257,6 +267,8 @@ func main() {
 				},
 			},
 		}),
+		// Step 3: Subscription definition;
+		// ---------------------------------------------------------------------
 		// Define all possible subscriptions
 		Subscription: graphql.NewObject(graphql.ObjectConfig{
 			Name: "SubscriptionRoot",
@@ -329,6 +341,9 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Step 4: A graphql handler;
+	// -------------------------------------------------------------------------
+
 	// Initializes the graphql http handler.
 	graphqlHandler := handler.New(&handler.Config{
 		Schema:     &schema,
@@ -336,6 +351,9 @@ func main() {
 		GraphiQL:   false,
 		Playground: true,
 	})
+
+	// Step 5: A graphql handler;
+	// -------------------------------------------------------------------------
 
 	// Initializes the graphqlws http handler.
 	subscriptionHandler := graphqlws.NewHttpHandler(
@@ -354,10 +372,11 @@ func main() {
 				return
 			}
 			redisHandler := graphqlRedis.NewSubscriptionHandler(conn, redisDialer)
+
+			// Add the handlers to the conn.
 			conn.AddHandler(redisHandler)
 			conn.AddHandler(&connectionHandler{
-				broadcastJoin: broadcastJoin,
-				broadcastLeft: broadcastLeft,
+				conn: conn,
 			})
 		},
 	)
@@ -370,6 +389,8 @@ func main() {
 		}
 	}()
 
+	// Step 6: Start the http server;
+	// -------------------------------------------------------------------------
 	// Serve the GraphQL and GraphQL WS endpoint
 	mux := http.NewServeMux()
 	mux.Handle("/graphql", graphqlHandler)
