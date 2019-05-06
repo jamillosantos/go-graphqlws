@@ -16,7 +16,7 @@ import (
 	"github.com/lab259/rlog"
 	"github.com/rs/cors"
 
-	"github.com/jamillosantos/go-graphqlws"
+	graphqlws "github.com/jamillosantos/go-graphqlws"
 	graphqlRedis "github.com/jamillosantos/go-graphqlws/redis"
 )
 
@@ -66,6 +66,17 @@ func (handler *connectionHandler) HandleConnectionInit(init *graphqlws.GQLConnec
 	users[handler.user.Name] = &handler.user
 
 	broadcastJoin(&handler.user)
+	return nil
+}
+
+// handlerFromConnection iterate through connection handlers to find
+// our connectionHandler.
+func handlerFromConnection(conn *graphqlws.Conn) *connectionHandler {
+	for _, h := range conn.Handlers {
+		if connHandler, ok := h.(*connectionHandler); ok {
+			return connHandler
+		}
+	}
 	return nil
 }
 
@@ -318,14 +329,30 @@ func main() {
 						if !ok {
 							return nil, nil
 						}
+
 						var message Message
 						err := json.Unmarshal(messageRaw, &message)
 						if err != nil {
 							return nil, err
 						}
+
+						// We could have a different logic here for the author user, eg:
+						conn := p.Context.Value(graphqlRedis.ConnectionContextKey).(*graphqlws.Conn)
+						connHandler := handlerFromConnection(conn)
+						if message.User.Name == connHandler.user.Name {
+							rlog.Infof("%s wrote %s", message.User.Name, message.Text)
+						}
 						return &message, nil
 					},
 					Subscribe: func(params graphql.SubscribeParams) error {
+						// We could also subscribe the user in per user topics, eg:
+						subscription := params.Data.(*graphqlws.Subscription)
+						connHandler := handlerFromConnection(subscription.Connection)
+						err := params.Subscriber.SubscriberSubscribe(graphqlws.StringTopic(fmt.Sprintf("onDirectMessage.%s", connHandler.user.Name)))
+						if err != nil {
+							return err
+						}
+
 						// Subscribe the user in the `onMessage` topic.
 						return params.Subscriber.SubscriberSubscribe(graphqlws.StringTopic("onMessage"))
 					},

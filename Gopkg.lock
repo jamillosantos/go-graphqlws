@@ -159,14 +159,6 @@
   version = "v1.5.0"
 
 [[projects]]
-  digest = "1:447ab23604df9681aabfc6e48dbded59cb933b6eb4224e64d9d037318534b1bd"
-  name = "github.com/pkg/profile"
-  packages = ["."]
-  pruneopts = "UT"
-  revision = "f6fe06335df110bcf1ed6d4e852b760bfc15beee"
-  version = "v1.3.0"
-
-[[projects]]
   digest = "1:b0c25f00bad20d783d259af2af8666969e2fc343fa0dc9efe52936bbd67fb758"
   name = "github.com/rs/cors"
   packages = ["."]
@@ -274,7 +266,6 @@
     "github.com/lab259/rlog",
     "github.com/onsi/ginkgo",
     "github.com/onsi/gomega",
-    "github.com/pkg/profile",
     "github.com/rs/cors",
   ]
   solver-name = "gps-cdcl"
