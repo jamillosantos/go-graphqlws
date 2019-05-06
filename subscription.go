@@ -6,6 +6,7 @@ import (
 
 	"github.com/lab259/graphql"
 	"github.com/lab259/graphql/language/ast"
+	"github.com/lab259/rlog"
 )
 
 var (
@@ -46,6 +47,7 @@ type Subscription struct {
 	Fields        []string
 	Schema        *graphql.Schema
 	Connection    *Conn
+	Logger        rlog.Logger
 }
 
 func (s *Subscription) SendData(data *GQLDataObject) error {

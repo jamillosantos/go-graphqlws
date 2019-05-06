@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"runtime"
 	"time"
 
 	"github.com/gomodule/redigo/redis"
@@ -82,6 +83,23 @@ func main() {
 			return err
 		},
 	}
+
+	redisDialer := graphqlRedis.NewDialer("tcp", "localhost:6379")
+
+	rlog.Info("Testing redis...")
+	func() {
+		redisConn, err := redisDialer.Dial()
+		if err != nil {
+			rlog.Critical("error dialing to the redis server: ", err)
+			os.Exit(1)
+		}
+		defer redisConn.Close()
+		_, err = redisConn.Do("PING")
+		if err != nil {
+			rlog.Critical("failed to initialize redis: ", err)
+			os.Exit(1)
+		}
+	}()
 
 	rlog.Info("Testing redis...")
 	func() {
@@ -293,7 +311,7 @@ func main() {
 				rlog.Error("error accepting a new subscription: ", err)
 				return
 			}
-			redisHandler := graphqlRedis.NewSubscriptionHandler(conn, redisPool)
+			redisHandler := graphqlRedis.NewSubscriptionHandler(conn, redisDialer)
 			conn.AddHandler(redisHandler)
 			conn.AddHandler(&connectionHandler{
 				broadcastJoin: broadcastJoin,
@@ -301,6 +319,13 @@ func main() {
 			})
 		},
 	)
+
+	go func() {
+		for {
+			rlog.WithField("goRoutines", runtime.NumGoroutine()).Debug("stats")
+			time.Sleep(time.Second)
+		}
+	}()
 
 	// Serve the GraphQL WS endpoint
 	mux := http.NewServeMux()

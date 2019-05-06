@@ -2,9 +2,9 @@ package redis
 
 import (
 	"fmt"
+	"reflect"
 	"sync"
 
-	"github.com/gomodule/redigo/redis"
 	"github.com/lab259/graphql"
 
 	"github.com/jamillosantos/go-graphqlws"
@@ -27,15 +27,15 @@ type SubscriptionHandler interface {
 type redisSubscriptionHandler struct {
 	conn          *graphqlws.Conn
 	subscriptions sync.Map
-	pool          *redis.Pool
+	dialer        Dialer
 }
 
 // NewSubscriptionHandler returns a new instance of a `SubscriptionHandler` that
 // will add the logic for registering
-func NewSubscriptionHandler(conn *graphqlws.Conn, pool *redis.Pool) SubscriptionHandler {
+func NewSubscriptionHandler(conn *graphqlws.Conn, dialer Dialer) SubscriptionHandler {
 	handler := &redisSubscriptionHandler{
-		conn: conn,
-		pool: pool,
+		conn:   conn,
+		dialer: dialer,
 	}
 	return handler
 }
@@ -87,7 +87,13 @@ func (handler *redisSubscriptionHandler) HandleSubscriptionStop(subscription *gr
 
 func (handler *redisSubscriptionHandler) HandleWebsocketClose(code int, text string) error {
 	handler.subscriptions.Range(func(key, value interface{}) bool {
-		value.(*subscriptionRedisReader).close()
+		reader, ok := value.(*subscriptionRedisReader)
+		if !ok {
+			handler.conn.Logger.Critical(reflect.TypeOf(value), " is not a *subscriptionRedisReader")
+			return true
+		}
+		reader.subscription.Logger.Debug("redisSubscriptionHandler: closing reader")
+		reader.close()
 		return true
 	})
 	return nil

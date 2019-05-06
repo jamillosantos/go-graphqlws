@@ -37,7 +37,8 @@ type Conn struct {
 	Logger           rlog.Logger
 	Schema           *graphql.Schema
 	Subscriptions    sync.Map
-	state            ConnState
+	stateMutex       sync.Mutex
+	_state           ConnState
 	handlersMutex    sync.Mutex
 	handlers         []Handler
 	conn             *websocket.Conn
@@ -63,6 +64,20 @@ func NewConn(conn *websocket.Conn, schema *graphql.Schema, config *Config) (*Con
 	go c.readPump()
 	go c.writePump()
 	return c, nil
+}
+
+func (c *Conn) getState() ConnState {
+	c.stateMutex.Lock()
+	defer c.stateMutex.Unlock()
+
+	return c._state
+}
+
+func (c *Conn) setState(value ConnState) {
+	c.stateMutex.Lock()
+	defer c.stateMutex.Unlock()
+
+	c._state = value
 }
 
 // AddHandler adds a `Handler` to the connection.
@@ -99,7 +114,7 @@ func (c *Conn) SendData(message *OperationMessage) {
 
 // SendError sends an error to the client.
 func (c *Conn) SendError(err error) error {
-	if c.state == connStateClosed {
+	if c.getState() == connStateClosed {
 		return ErrConnectionClosed
 	}
 
@@ -115,7 +130,7 @@ func (c *Conn) SendError(err error) error {
 }
 
 func (c *Conn) sendConnectionError(err error) error {
-	if c.state == connStateClosed {
+	if c.getState() == connStateClosed {
 		return ErrConnectionClosed
 	}
 
@@ -133,7 +148,7 @@ func (c *Conn) sendConnectionError(err error) error {
 }
 
 func (c *Conn) sendOperationErrors(id string, errs []error) error {
-	if c.state == connStateClosed {
+	if c.getState() == connStateClosed {
 		return ErrConnectionClosed
 	}
 
@@ -152,10 +167,12 @@ func (c *Conn) sendOperationErrors(id string, errs []error) error {
 }
 
 func (c *Conn) close() {
-	if c.state == connStateClosed {
+	if c.getState() == connStateClosed {
 		c.Logger.Debug("ignoring close: already closed")
 		return
 	}
+
+	c.setState(connStateClosed)
 
 	// Go through the handlers and call all `WebsocketCloseHandler`s found.
 	for _, handler := range c.handlers {
@@ -174,10 +191,10 @@ func (c *Conn) close() {
 		}
 	}
 
+	close(c.outgoingMessages)
 	atomic.AddInt64(&ConnectionCount, -1)
 	c.Logger.Trace(TraceLevelConnectionEvents, "trying to close ", c.conn.RemoteAddr())
 	_ = c.conn.Close()
-	c.state = connStateClosed
 }
 
 func (c *Conn) pongHandler(message string) error {
@@ -202,6 +219,13 @@ func (c *Conn) pongHandler(message string) error {
 	return nil
 }
 
+func (c *Conn) lockHandlers(f func() error) error {
+	c.handlersMutex.Lock()
+	defer c.handlersMutex.Unlock()
+
+	return f()
+}
+
 // closeHandler is called when the connection is closed by the peer.
 func (c *Conn) closeHandler(code int, text string) error {
 	c.Logger.Trace(TraceLevelConnectionEvents, "closeHandler: closing: ", c.conn.RemoteAddr())
@@ -209,66 +233,66 @@ func (c *Conn) closeHandler(code int, text string) error {
 		c.Logger.Trace(TraceLevelConnectionEvents, "closeHandler: defer closing: ", c.conn.RemoteAddr())
 	}()
 
-	c.state = connStateClosed
+	c.setState(connStateClosed)
 	atomic.AddInt64(&ConnectionCount, -1)
+	close(c.outgoingMessages)
 
-	// Go through the handlers and call all `WebsocketCloseHandler`s found.
-	for _, handler := range c.handlers {
-		h, ok := handler.(WebsocketCloseHandler)
-		if !ok { // If not a `ConnectionStartHandler` try next.
-			continue
-		}
-		err := h.HandleWebsocketClose(code, text)
-		hErr, ok := err.(*HandlerError)
-		if ok {
-			if hErr.propagationStopped {
-				break
+	return c.lockHandlers(func() error {
+		c.Logger.Debug("closeHandler: calling handlers")
+		// Go through the handlers and call all `WebsocketCloseHandler`s found.
+		for _, handler := range c.handlers {
+			h, ok := handler.(WebsocketCloseHandler)
+			if !ok { // If not a `ConnectionStartHandler` try next.
+				continue
 			}
-		} else if err != nil {
-			c.Logger.Error("failed to HandleWebsocketClose: ", err)
-			return err
+			err := h.HandleWebsocketClose(code, text)
+			hErr, ok := err.(*HandlerError)
+			if ok {
+				if hErr.propagationStopped {
+					break
+				}
+			} else if err != nil {
+				c.Logger.Error("failed to HandleWebsocketClose: ", err)
+				return err
+			}
 		}
-	}
+		c.Logger.Debug("closeHandler: calling handlers exited")
 
-	return nil
+		return nil
+	})
 }
 
 func (c *Conn) recover(t RWType) {
 	if r := recover(); r != nil {
 		defaultPrevented := false
 
-		// Broadcast the message to all handlers attached.
-		for _, handler := range c.handlers {
-			// Of course, only `SystemRecoverHandler` will be called.
-			h, ok := handler.(SystemRecoverHandler)
-			if !ok {
-				continue
-			}
-			err := h.HandlePanic(t, r)
-			if hErr, ok := err.(*HandlerError); ok {
-				if hErr.defaultPrevented {
-					defaultPrevented = true
+		c.lockHandlers(func() error {
+			// Broadcast the message to all handlers attached.
+			for _, handler := range c.handlers {
+				// Of course, only `SystemRecoverHandler` will be called.
+				h, ok := handler.(SystemRecoverHandler)
+				if !ok {
+					continue
 				}
-				if hErr.propagationStopped {
-					break
+				err := h.HandlePanic(t, r)
+				if hErr, ok := err.(*HandlerError); ok {
+					if hErr.defaultPrevented {
+						defaultPrevented = true
+					}
+					if hErr.propagationStopped {
+						break
+					}
+				} else if err != nil {
+					// TODO
+					return nil
 				}
-			} else if err != nil {
-				// TODO
-				return
 			}
-		}
-
-		if defaultPrevented {
-			return
-		}
+			return nil
+		})
 
 		stack := make([]byte, 2048)
 		n := runtime.Stack(stack, false)
 		c.Logger.WithField("stack", string(stack[:n])).Error("panicked: ", r)
-
-		if r == "repeated read on failed websocket connection" { // Yep... This is the only way to get it done.
-			//
-		}
 	}
 }
 
@@ -314,6 +338,7 @@ func (c *Conn) gqlStart(start *GQLStart) {
 		OperationName: start.Payload.OperationName,
 		Connection:    c,
 		Schema:        c.Schema,
+		Logger:        c.Logger.WithField("subscriptionID", start.ID),
 	}
 
 	logger := c.Logger.WithFields(rlog.Fields{
@@ -444,7 +469,7 @@ func (c *Conn) readPumpIteration() {
 	case gqlTypeConnectionInit:
 		// If the connection is not initializing, it is a protocol error and the
 		// connection should be reset.X
-		if c.state != connStateInitializing {
+		if c.getState() != connStateInitializing {
 			panic(ErrReinitializationForbidden)
 		}
 
@@ -455,32 +480,40 @@ func (c *Conn) readPumpIteration() {
 		}
 
 		defaultPrevented := false
-		// Broadcast the message to all handlers attached.
-		for _, handler := range c.handlers {
-			// Of course, only `ConnectionInitHandlers` will be called.
-			h, ok := handler.(ConnectionInitHandler)
-			if !ok {
-				continue
+
+		err := c.lockHandlers(func() error {
+			// Broadcast the message to all handlers attached.
+			for _, handler := range c.handlers {
+				// Of course, only `ConnectionInitHandlers` will be called.
+				h, ok := handler.(ConnectionInitHandler)
+				if !ok {
+					continue
+				}
+				err = h.HandleConnectionInit(&connectionInit)
+				if hErr, ok := err.(*HandlerError); ok {
+					if hErr.defaultPrevented {
+						defaultPrevented = true
+					}
+					if hErr.propagationStopped {
+						break
+					}
+				} else if err != nil {
+					err = c.sendConnectionError(err)
+					if err != nil {
+						c.Logger.Error("error sending a connection error: ", err)
+					}
+					return err // Returning here have to be checked. It might call the close too early and let the client without the response.
+				}
 			}
-			err = h.HandleConnectionInit(&connectionInit)
-			if hErr, ok := err.(*HandlerError); ok {
-				if hErr.defaultPrevented {
-					defaultPrevented = true
-				}
-				if hErr.propagationStopped {
-					break
-				}
-			} else if err != nil {
-				err = c.sendConnectionError(err)
-				if err != nil {
-					c.Logger.Error("error sending a connection error: ", err)
-				}
-				return // Returning here have to be checked. It might call the close too early and let the client witout the response.
-			}
+			return nil
+		})
+
+		if err != nil {
+			return
 		}
 
 		// Now the handshake is done.
-		c.state = connStateEstablished
+		c.setState(connStateEstablished)
 
 		c.Logger.Info("connection established")
 
@@ -521,7 +554,7 @@ func (c *Conn) readPumpIteration() {
 
 		return // Bye bye readPump
 	case gqlTypeStart:
-		if c.state != connStateEstablished {
+		if c.getState() != connStateEstablished {
 			panic(ErrConnectionNotFullyEstablished)
 		}
 
@@ -563,7 +596,7 @@ func (c *Conn) readPump() {
 	}()
 	defer c.close()
 
-	c.state = connStateInitializing
+	c.setState(connStateInitializing)
 
 	// Prepare for the first pong.
 	// The read limit is the size of the package that will be read per once.
@@ -575,7 +608,7 @@ func (c *Conn) readPump() {
 
 	c.Logger.Trace(TraceLevelConnectionEvents, "New connection from ", c.conn.RemoteAddr())
 
-	for c.state != connStateClosed {
+	for c.getState() != connStateClosed {
 		c.conn.SetReadDeadline(time.Now().Add(*c.config.PongWait))
 		c.readPumpIteration()
 	}
@@ -593,16 +626,9 @@ func (c *Conn) writePump() {
 	pingTicker := time.NewTicker((*c.config.PongWait * 9) / 10)
 	defer func() {
 		pingTicker.Stop()
-
-		// Ensure the channel is closed before leaving.
-		if c.outgoingMessages != nil {
-			// Ensure it is safe to close the channel.
-			close(c.outgoingMessages)
-			c.outgoingMessages = nil
-		}
 	}()
 
-	for c.state != connStateClosed {
+	for c.getState() != connStateClosed {
 		select {
 		// Waits until receive a message to be sent.
 		case operationMessage, ok := <-c.outgoingMessages:
@@ -639,7 +665,7 @@ func (c *Conn) writePump() {
 
 // Close finishes the connection.
 func (c *Conn) Close() {
-	if c.state == connStateClosed {
+	if c.getState() == connStateClosed {
 		return
 	}
 	_ = c.conn.WriteControl(websocket.CloseMessage, nil, time.Now().Add(*c.config.WriteTimeout))
