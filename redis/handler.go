@@ -69,6 +69,7 @@ func (handler *redisSubscriptionHandler) HandleSubscriptionStart(subscription *g
 			Variables:      subscription.Variables,
 			OperationName:  subscription.OperationName,
 			Subscriber:     subscriber,
+			Data:           subscription,
 		})
 		if err != nil {
 			return err

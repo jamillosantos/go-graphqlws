@@ -40,7 +40,7 @@ type Conn struct {
 	stateMutex       sync.Mutex
 	_state           ConnState
 	handlersMutex    sync.Mutex
-	handlers         []Handler
+	Handlers         []Handler
 	conn             *websocket.Conn
 	config           *Config
 	outgoingMessages chan *OperationMessage
@@ -58,7 +58,7 @@ func NewConn(conn *websocket.Conn, schema *graphql.Schema, config *Config) (*Con
 		Logger:           rlog.WithField("connID", connID.String()),
 		conn:             conn,
 		outgoingMessages: make(chan *OperationMessage, 10),
-		handlers:         make([]Handler, 0, 3),
+		Handlers:         make([]Handler, 0, 3),
 	}
 	atomic.AddInt64(&ConnectionCount, 1)
 	go c.readPump()
@@ -87,7 +87,7 @@ func (c *Conn) AddHandler(handler Handler) {
 	c.handlersMutex.Lock()
 	defer c.handlersMutex.Unlock()
 
-	c.handlers = append(c.handlers, handler)
+	c.Handlers = append(c.Handlers, handler)
 }
 
 // RemoveHandler removes a `Handler` from the connection.
@@ -97,14 +97,14 @@ func (c *Conn) RemoveHandler(handler Handler) {
 	c.handlersMutex.Lock()
 	defer c.handlersMutex.Unlock()
 
-	hs := c.handlers
-	for i, h := range c.handlers {
+	hs := c.Handlers
+	for i, h := range c.Handlers {
 		if h == handler {
 			hs = append(hs[:i], hs[i+1:])
 			break
 		}
 	}
-	c.handlers = hs
+	c.Handlers = hs
 }
 
 // SendData enqueues a message to be sent by the writePump.
@@ -175,7 +175,7 @@ func (c *Conn) close() {
 	c.setState(connStateClosed)
 
 	// Go through the handlers and call all `WebsocketCloseHandler`s found.
-	for _, handler := range c.handlers {
+	for _, handler := range c.Handlers {
 		h, ok := handler.(WebsocketCloseHandler)
 		if !ok { // If not a `ConnectionStartHandler` try next.
 			continue
@@ -205,7 +205,7 @@ func (c *Conn) pongHandler(message string) error {
 	}
 
 	// Go through the handlers and call all `WebsocketPongHandler`s found.
-	for _, handler := range c.handlers {
+	for _, handler := range c.Handlers {
 		h, ok := handler.(WebsocketPongHandler)
 		if !ok { // If not a `WebsocketPongHandler` try next.
 			continue
@@ -240,7 +240,7 @@ func (c *Conn) closeHandler(code int, text string) error {
 	return c.lockHandlers(func() error {
 		c.Logger.Debug("closeHandler: calling handlers")
 		// Go through the handlers and call all `WebsocketCloseHandler`s found.
-		for _, handler := range c.handlers {
+		for _, handler := range c.Handlers {
 			h, ok := handler.(WebsocketCloseHandler)
 			if !ok { // If not a `ConnectionStartHandler` try next.
 				continue
@@ -269,7 +269,7 @@ func (c *Conn) recover(t RWType) {
 		// In this case, lock handlers will do no good.
 		//
 		// Broadcast the message to all handlers attached.
-		for _, handler := range c.handlers {
+		for _, handler := range c.Handlers {
 			// Of course, only `SystemRecoverHandler` will be called.
 			h, ok := handler.(SystemRecoverHandler)
 			if !ok {
@@ -302,7 +302,7 @@ func (c *Conn) removeSubscription(id string) {
 func (c *Conn) gqlStart(start *GQLStart) {
 	errs := make([]error, 0, 1)
 	// Go through the handlers and call all `ConnectionStartHandler`s found.
-	for _, handler := range c.handlers {
+	for _, handler := range c.Handlers {
 		h, ok := handler.(ConnectionStartHandler)
 		if !ok { // If not a `ConnectionStartHandler` try next.
 			continue
@@ -370,7 +370,7 @@ func (c *Conn) gqlStart(start *GQLStart) {
 	c.addSubscription(subscription)
 
 	// Go through the handlers and call all `ConnectionTerminateHandler`s found.
-	for _, handler := range c.handlers {
+	for _, handler := range c.Handlers {
 		h, ok := handler.(SubscriptionStartHandler)
 		if !ok { // If not a `ConnectionStartHandler` try next.
 			continue
@@ -389,7 +389,7 @@ func (c *Conn) gqlStart(start *GQLStart) {
 
 func (c *Conn) gqlStop(stop *GQLStop) {
 	// Go through the handlers and call all `ConnectionStopHandler`s found.
-	for _, handler := range c.handlers {
+	for _, handler := range c.Handlers {
 		h, ok := handler.(ConnectionStopHandler)
 		if !ok { // If not a `ConnectionStartHandler` try next.
 			continue
@@ -409,7 +409,7 @@ func (c *Conn) gqlStop(stop *GQLStop) {
 	subscription := subs.(*Subscription) // This is internally managed. So, it should be safe to force the typcast.
 
 	// Go through the handlers and call all `SubscriptionStopHandler`s found.
-	for _, handler := range c.handlers {
+	for _, handler := range c.Handlers {
 		h, ok := handler.(SubscriptionStopHandler)
 		if !ok { // If not a `ConnectionStartHandler` try next.
 			continue
@@ -476,7 +476,7 @@ func (c *Conn) readPumpIteration() {
 
 		err := c.lockHandlers(func() error {
 			// Broadcast the message to all handlers attached.
-			for _, handler := range c.handlers {
+			for _, handler := range c.Handlers {
 				// Of course, only `ConnectionInitHandlers` will be called.
 				h, ok := handler.(ConnectionInitHandler)
 				if !ok {
@@ -526,7 +526,7 @@ func (c *Conn) readPumpIteration() {
 		// added to provide further extension witout making it incompatible.
 
 		// Go through the handlers and call all `ConnectionTerminateHandler`s found.
-		for _, handler := range c.handlers {
+		for _, handler := range c.Handlers {
 			h, ok := handler.(ConnectionTerminateHandler)
 			if !ok { // If not a `ConnectionStartHandler` try next.
 				continue
