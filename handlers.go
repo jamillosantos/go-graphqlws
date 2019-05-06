@@ -11,6 +11,8 @@ const (
 	Write
 )
 
+// SystemRecoverHandler describes the handler that will be called when any panic
+// happens while interacting with the client.
 type SystemRecoverHandler interface {
 	Handler
 	HandlePanic(t RWType, r interface{}) error

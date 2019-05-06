@@ -40,6 +40,11 @@ func NewSubscriptionHandler(conn *graphqlws.Conn, dialer Dialer) SubscriptionHan
 	return handler
 }
 
+// HandlerSubscriptionStart is called when a subscription starts. It iterates
+// through the fields defined in the query, calling their `Subscribe` methods.
+//
+// At the end, it starts a `subscriptionRedisReader` to receive subscription
+// info from Redis.
 func (handler *redisSubscriptionHandler) HandleSubscriptionStart(subscription *graphqlws.Subscription) error {
 	subsr := &subscriptionRedisReader{
 		subscription: subscription,
@@ -75,6 +80,8 @@ func (handler *redisSubscriptionHandler) HandleSubscriptionStart(subscription *g
 	return nil
 }
 
+// HandleSubscriptionStop stops the `subscriptionRedisReader` using the
+// subscription id stored in the handler.
 func (handler *redisSubscriptionHandler) HandleSubscriptionStop(subscription *graphqlws.Subscription) error {
 	subs, ok := handler.subscriptions.Load(subscription.ID)
 	if !ok {
@@ -85,6 +92,8 @@ func (handler *redisSubscriptionHandler) HandleSubscriptionStop(subscription *gr
 	return nil
 }
 
+// HandleWebsocketClose captures when the websocket is closed. Hence, closing
+// the `subscriptionRedisReader` as well.
 func (handler *redisSubscriptionHandler) HandleWebsocketClose(code int, text string) error {
 	handler.subscriptions.Range(func(key, value interface{}) bool {
 		reader, ok := value.(*subscriptionRedisReader)

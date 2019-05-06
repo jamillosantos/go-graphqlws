@@ -341,7 +341,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Step 4: A graphql handler;
+	// Step 4: Define a GraphQL handler;
 	// -------------------------------------------------------------------------
 
 	// Initializes the graphql http handler.
@@ -352,7 +352,7 @@ func main() {
 		Playground: true,
 	})
 
-	// Step 5: A graphql handler;
+	// Step 5: Define a GraphQL WS handler;
 	// -------------------------------------------------------------------------
 
 	// Initializes the graphqlws http handler.

@@ -1,6 +1,8 @@
 # go-graphqlws
 
-**THIS IS A WORK IN PROGRESS**
+**THIS LIBRARY IS A WORK IN PROGRESS**
+
+**THIS DOCUMENTATION IS A DRAFT**
 
 go-graphqlws extends the [graphql-go/graphql](https://github.com/graphql-go/graphql)
 by implementing the graphqlws protocol on top of the [gorilla](https://github.com/gorilla/websocket)
@@ -14,6 +16,127 @@ repository. The idea is once we get it done, this library will starting using
 This implementation use a lot of the ideas contained in [functionalfoundry/graphqlws](https://github.com/functionalfoundry/graphqlws).
 But, it is architecturally different. But, some of the code was heavily based on
 that.
+
+## Before you start
+
+### Handshake
+
+The endpoint, let's say '/subscriptions' will trigger a `graphqlws.Handler` that
+will upgrade the connection and call the connection handler method:
+
+	func (conn *graphql.Conn, err error)
+
+This method will inform if any error happened. If not, a connection will be
+provided. At this point, when the connection is already established, you should
+add all **handlers** responsible for dealing with all events happens with the
+client.
+
+Check the 1st example on the next session (Handlers).
+
+### Handlers
+
+Handlers are interfaces that can be implemented and added to the `graphqlws.Conn`
+in order to add new behavior to it. On the following example it will adding a
+message for everytime a connection is closed.
+
+```go
+// ...
+type connHandler struct {}
+
+func (handler *connHandler) HandleWebsocketClose(code int, text string) error {
+	fmt.Println("the connection was closed!")
+	return nil
+}
+// ...
+mux.Handle("/subscriptions", graphqlws.NewHttpHandler(
+	graphqlws.NewHandlerConfigFactory().Upgrader(graphqlws.NewUpgrader(&websocket.Upgrader{})).Schema(&schema).Build(),
+	graphqlws.NewConfigFactory().Build(),
+	func(conn *graphqlws.Conn, err error) { // Handshake referred on the previous session
+		if err != nil {
+			rlog.Error(err)
+			return
+		}
+		conn.AddHandler(&connHandler{conn: conn})
+	},
+))
+// ...
+```
+
+One type struct can implement one or many structs, it totally depends on what
+is your need and how are you going to arrange them to get your desired
+behaviour.
+
+```go
+type SystemRecoverHandler interface {
+	HandlePanic(t RWType, r interface{}) error
+}
+
+type ConnectionInitHandler interface {
+	HandleConnectionInit(*GQLConnectionInit) error
+}
+
+type ConnectionStartHandler interface {
+	HandleConnectionStart(*GQLStart) []error
+}
+
+type ConnectionStopHandler interface {
+	HandleConnectionStop(*GQLStop) error
+}
+
+type ConnectionTerminateHandler interface {
+	HandleConnectionTerminate(*GQLConnectionTerminate) error
+}
+
+type SubscriptionStartHandler interface {
+	HandleSubscriptionStart(subscription *Subscription) error
+}
+
+type SubscriptionStopHandler interface {
+	HandleSubscriptionStop(subscription *Subscription) error
+}
+
+type WebsocketPongHandler interface {
+	HandleWebsocketPong(message string) error
+}
+
+type WebsocketPingHandler interface {
+	HandleWebsocketPing() error
+}
+
+type WebsocketCloseHandler interface {
+	HandleWebsocketClose(code int, text string) error
+}
+```
+
+A useful example is at the `connection_init` step (simple-chat-server-redis example),
+where the payload is analyzed to check if the user has permission to connect:
+
+```go
+func (handler *connectionHandler) HandleConnectionInit(init *graphqlws.GQLConnectionInit) error {
+	var at AuthToken
+	err := json.Unmarshal(init.Payload, &at)
+	if err != nil {
+		return err
+	}
+	if at.AuthToken == "" {
+		return errors.New("the user name should be provided")
+	}
+	handler.user.Name = at.AuthToken
+
+	users[handler.user.Name] = &handler.user
+
+	broadcastJoin(&handler.user)
+	return nil
+}
+```
+
+This example is simple but introduces the idea. A better approach would use JWT,
+for example.
+
+Handlers are powerful enough that our Redis implementation uses them to add 
+subscription capabilities.
+
+For more information about what each handler does, please refer to the [Godoc](https://godoc.org/github.com/jamillosantos/go-graphqlws).
 
 ## Getting Started
 
@@ -33,9 +156,9 @@ is well documented and follow these steps:
 
 	_You should define the `Subscribe` field of the graphql._ 
 	
-4. A graphql handler;
+4. Define a GraphQL handler;
 
-5. A graphqlws handler;
+5. Define a GraphQL WS handler;
 
 6. Start the http server.
 
