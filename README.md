@@ -1,4 +1,4 @@
-# go-graphqlws
+# go-graphqlws [![CircleCI](https://circleci.com/gh/jamillosantos/go-graphqlws.svg?style=shield)](https://circleci.com/gh/jamillosantos/go-graphqlws)
 
 **THIS LIBRARY IS A WORK IN PROGRESS**
 
