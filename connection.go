@@ -488,7 +488,7 @@ func (c *Conn) readPumpIteration() {
 				if !ok {
 					continue
 				}
-				err = h.HandleConnectionInit(&connectionInit)
+				err := h.HandleConnectionInit(&connectionInit)
 				if hErr, ok := err.(*HandlerError); ok {
 					defaultPrevented := false
 					if hErr.defaultPrevented {
@@ -497,13 +497,15 @@ func (c *Conn) readPumpIteration() {
 					if hErr.propagationStopped {
 						break
 					}
-					if !defaultPrevented {
+					if defaultPrevented {
+						c.Logger.Error("error initialized but default prevented: ", hErr)
+					} else {
 						return hErr
 					}
 				} else if err != nil {
-					err = c.sendConnectionError(err)
+					sendConnectionErr := c.sendConnectionError(err)
 					if err != nil {
-						c.Logger.Error("error sending a connection error: ", err)
+						c.Logger.Error("error sending a connection error: ", sendConnectionErr)
 					}
 					return err // Returning here have to be checked. It might call the close too early and let the client without the response.
 				}
