@@ -2,9 +2,6 @@ VERSION ?= $(shell git describe --tags 2>/dev/null | cut -c 2-)
 TEST_FLAGS ?=
 REPO_OWNER ?= $(shell cd .. && basename "$$(pwd)")
 
-GOPATH=$(CURDIR)/../../../../
-GOPATHCMD=GOPATH=$(GOPATH)
-
 COVERDIR=$(CURDIR)/.cover
 COVERAGEFILE=$(COVERDIR)/cover.out
 
@@ -13,14 +10,14 @@ EXAMPLES = $(shell ls examples)
 .PHONY: test test-watch coverage coverage-ci coverage-html dep-ensure dep-update vet lint fmt benchmark-load install-examples example-echo-server
 
 test:
-	@${GOPATHCMD} ginkgo --failFast ./...
+	@ginkgo --failFast ./...
 
 test-watch:
-	@${GOPATHCMD} ginkgo watch -cover -r ./...
+	@ginkgo watch -cover -r ./...
 
 coverage:
 	@mkdir -p $(COVERDIR)
-	@${GOPATHCMD} ginkgo -r -covermode=count --cover --trace ./
+	@ginkgo -r -covermode=count --cover --trace ./
 	@echo "mode: count" > "${COVERAGEFILE}"
 	@find . -type f -name *.coverprofile -exec grep -h -v "^mode:" {} >> "${COVERAGEFILE}" \; -exec rm -f {} \;
 
@@ -31,25 +28,16 @@ coverage-ci:
 	@find . -type f -name *.coverprofile -exec grep -h -v "^mode:" {} >> "${COVERAGEFILE}" \; -exec rm -f {} \;
 
 coverage-html:
-	@$(GOPATHCMD) go tool cover -html="${COVERAGEFILE}" -o .cover/report.html
-
-dep-init:
-	@$(GOPATHCMD) dep init -v
-
-dep-ensure:
-	@$(GOPATHCMD) dep ensure -v
-
-dep-update:
-	@$(GOPATHCMD) dep ensure -update -v
+	@go tool cover -html="${COVERAGEFILE}" -o .cover/report.html
 
 vet:
-	@$(GOPATHCMD) go vet ./...
+	@go vet ./...
 
 lint:
-	@$(GOPATHCMD) golint
+	@golint
 
 fmt:
-	@$(GOPATHCMD) go fmt ./...
+	@go fmt ./...
 
 benchmark-load:
 ifndef SCENARIO
@@ -63,7 +51,7 @@ install-examples:
 ifdef PROFILER
 	$(eval EXTRAARGS=)
 endif
-	@$(foreach example,$(EXAMPLES),GOBIN=$(CURDIR)/bin $(GOPATHCMD) go install "-ldflags=$(LDFLAGS)" $(EXTRAARGS) -v ./examples/$(example) &&) :
+	@$(foreach example,$(EXAMPLES),GOBIN=$(CURDIR)/bin go go install "-ldflags=$(LDFLAGS)" $(EXTRAARGS) -v ./examples/$(example) &&) :
 
 example-echo-server: install-examples
 	RLOG_LOG_LEVEL=DEBUG ./bin/echo-server
