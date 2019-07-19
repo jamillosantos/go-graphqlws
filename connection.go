@@ -472,8 +472,6 @@ func (c *Conn) readPumpIteration() {
 			Payload: operationMessage.Payload,
 		}
 
-		defaultPrevented := false
-
 		err := c.lockHandlers(func() error {
 			// Broadcast the message to all handlers attached.
 			for _, handler := range c.Handlers {
@@ -484,11 +482,15 @@ func (c *Conn) readPumpIteration() {
 				}
 				err = h.HandleConnectionInit(&connectionInit)
 				if hErr, ok := err.(*HandlerError); ok {
+					defaultPrevented := false
 					if hErr.defaultPrevented {
 						defaultPrevented = true
 					}
 					if hErr.propagationStopped {
 						break
+					}
+					if !defaultPrevented {
+						return hErr
 					}
 				} else if err != nil {
 					err = c.sendConnectionError(err)
@@ -500,8 +502,9 @@ func (c *Conn) readPumpIteration() {
 			}
 			return nil
 		})
-
 		if err != nil {
+			c.Close()
+			// If the initialization failed, we should cancel the connection
 			return
 		}
 
@@ -509,10 +512,6 @@ func (c *Conn) readPumpIteration() {
 		c.setState(connStateEstablished)
 
 		c.Logger.Info("connection established")
-
-		if defaultPrevented {
-			return
-		}
 
 		// Add message to be sent for the writePump
 		c.outgoingMessages <- gqlConnectionAck
