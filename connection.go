@@ -198,8 +198,14 @@ func (c *Conn) close() {
 }
 
 func (c *Conn) pongHandler(message string) error {
+	pongWait := time.Second * 60 // Default pong timeout
+
+	if c.config.PongWait != nil {
+		pongWait = *c.config.PongWait
+	}
+
 	// Set the deadline for the next read
-	err := c.conn.SetReadDeadline(time.Now().Add(*c.config.PongWait))
+	err := c.conn.SetReadDeadline(time.Now().Add(pongWait))
 	if err != nil {
 		return err
 	}
@@ -286,6 +292,8 @@ func (c *Conn) recover(t RWType) {
 		stack := make([]byte, 2048)
 		n := runtime.Stack(stack, false)
 		c.Logger.WithField("stack", string(stack[:n])).Error("panicked: ", r)
+
+		c.Close()
 	}
 }
 
@@ -503,6 +511,7 @@ func (c *Conn) readPumpIteration() {
 			return nil
 		})
 		if err != nil {
+			c.Logger.Error("fatal error while initializing the connection: ", err)
 			c.Close()
 			// If the initialization failed, we should cancel the connection
 			return
@@ -590,10 +599,12 @@ func (c *Conn) readPump() {
 
 	c.setState(connStateInitializing)
 
-	// Prepare for the first pong.
-	// The read limit is the size of the package that will be read per once.
-	// That, might be adjustable depending your needs.
-	c.conn.SetReadLimit(*c.config.ReadLimit)
+	if c.config.ReadLimit != nil {
+		// Prepare for the first pong.
+		// The read limit is the size of the package that will be read per once.
+		// That, might be adjustable depending your needs.
+		c.conn.SetReadLimit(*c.config.ReadLimit)
+	}
 
 	c.conn.SetPongHandler(c.pongHandler)
 	c.conn.SetCloseHandler(c.closeHandler)
@@ -601,7 +612,6 @@ func (c *Conn) readPump() {
 	c.Logger.Trace(TraceLevelConnectionEvents, "New connection from ", c.conn.RemoteAddr())
 
 	for c.getState() != connStateClosed {
-		c.conn.SetReadDeadline(time.Now().Add(*c.config.PongWait))
 		c.readPumpIteration()
 	}
 }
@@ -609,14 +619,17 @@ func (c *Conn) readPump() {
 var emptyBytes = []byte{}
 
 func (c *Conn) writePump() {
-	defer func() {
-		c.Logger.Debug("leaving writePump")
-	}()
-	defer c.close()
 	defer c.recover(Write)
+	pongWait := time.Second * 60 // Default pong timeout
 
-	pingTicker := time.NewTicker((*c.config.PongWait * 9) / 10)
+	if c.config.PongWait != nil {
+		pongWait = *c.config.PongWait
+	}
+
+	pingTicker := time.NewTicker((pongWait * 9) / 10)
 	defer func() {
+		c.close()
+		c.Logger.Debug("leaving writePump")
 		pingTicker.Stop()
 	}()
 
@@ -624,31 +637,30 @@ func (c *Conn) writePump() {
 		select {
 		// Waits until receive a message to be sent.
 		case operationMessage, ok := <-c.outgoingMessages:
-			if !ok {
+			c.conn.SetWriteDeadline(time.Now().Add(*c.config.WriteTimeout))
+			if !ok || operationMessage == operationMessageEOF {
+				// !ok: The outgoingMessages channel was closed.
+				// Or the message sent was a EOF and it means that the connection was closed.
+				c.conn.WriteMessage(websocket.CloseMessage, []byte{})
 				return
 			}
-			// Well, if this is a EOF, it means that the connection was
-			if operationMessage == operationMessageEOF {
-				return
-			}
+
 			// Schedule a possible write timeout.
-			err := c.conn.SetWriteDeadline(time.Now().Add(*c.config.WriteTimeout))
-			if err != nil {
-				panic(err)
-			}
 			// Actually writes the response to the websocket connection.
-			c.conn.WriteJSON(operationMessage)
-		// In case it takes too long to detect a message to be written, we should
-		// send a PING to keep the connection open.
-		case <-pingTicker.C:
-			err := c.conn.SetWriteDeadline(time.Now().Add(*c.config.WriteTimeout))
+			err := c.conn.WriteJSON(operationMessage)
 			if err != nil {
-				panic(err)
+				c.Logger.Error("error sending the operationMessage:", err)
 			}
-			err = c.conn.WriteMessage(websocket.PingMessage, emptyBytes)
+			// In case it takes too long to detect a message to be written, we should
+			// send a PING to keep the connection open.
+		case <-pingTicker.C:
+			c.conn.SetWriteDeadline(time.Now().Add(*c.config.WriteTimeout))
+			err := c.conn.WriteMessage(websocket.PingMessage, emptyBytes)
 			if err != nil {
 				// If cannot write the WriteMessage, the connection
 				// should be closed.
+				c.Logger.Error("error sending the pingMessage:", err)
+				c.conn.WriteMessage(websocket.CloseMessage, []byte{})
 				return
 			}
 		}
