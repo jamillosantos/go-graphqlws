@@ -2,6 +2,8 @@ package graphqlws
 
 import (
 	"net/http"
+
+	"github.com/tomasen/realip"
 )
 
 // NewHttpHandler returns a `http.Handler` ready for being used.
@@ -33,6 +35,10 @@ func NewHttpHandler(handlerConfig HandlerConfig, connectionConfig Config, handle
 			return
 		}
 
-		handler(NewConn(ws, handlerConfig.Schema, &connectionConfig))
+		conn, err := NewConn(ws, handlerConfig.Schema, &connectionConfig)
+		if err == nil {
+			conn.Logger.Info("Connection started from: ", realip.FromRequest(r))
+		}
+		handler(conn, err)
 	})
 }

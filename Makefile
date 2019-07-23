@@ -10,7 +10,7 @@ EXAMPLES = $(shell ls examples)
 .PHONY: test test-watch coverage coverage-ci coverage-html dep-ensure dep-update vet lint fmt benchmark-load install-examples example-echo-server
 
 test:
-	@ginkgo --failFast ./...
+	@ginkgo --failFast -race ./...
 
 test-watch:
 	@ginkgo watch -cover -r ./...
@@ -44,14 +44,14 @@ ifndef SCENARIO
 	@echo "Please define SCENARIO"
 	@echo "make benchmark SCENARIO=<scenarios from './artillary' folder>"
 else
-	artillery run ./artillery/$(SCENARIO)
+	npx artillery run ./artillery/$(SCENARIO)
 endif
 
 install-examples:
 ifdef PROFILER
 	$(eval EXTRAARGS=)
 endif
-	@$(foreach example,$(EXAMPLES),GOBIN=$(CURDIR)/bin go go install "-ldflags=$(LDFLAGS)" $(EXTRAARGS) -v ./examples/$(example) &&) :
+	@$(foreach example,$(EXAMPLES),GOBIN=$(CURDIR)/bin go install "-ldflags=$(LDFLAGS)" $(EXTRAARGS) -v ./examples/$(example) &&) :
 
 example-echo-server: install-examples
 	RLOG_LOG_LEVEL=DEBUG ./bin/echo-server
