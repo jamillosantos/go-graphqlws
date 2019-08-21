@@ -6,7 +6,7 @@ import (
 
 	"github.com/lab259/graphql"
 	"github.com/lab259/graphql/language/ast"
-	"github.com/lab259/rlog"
+	"github.com/lab259/rlog/v2"
 )
 
 var (

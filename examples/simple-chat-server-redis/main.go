@@ -13,7 +13,7 @@ import (
 	"github.com/gorilla/websocket"
 	"github.com/jamillosantos/handler"
 	"github.com/lab259/graphql"
-	"github.com/lab259/rlog"
+	"github.com/lab259/rlog/v2"
 	"github.com/rs/cors"
 
 	graphqlws "github.com/jamillosantos/go-graphqlws"

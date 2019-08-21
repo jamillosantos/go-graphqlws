@@ -46,10 +46,7 @@ func NewSubscriptionHandler(conn *graphqlws.Conn, dialer Dialer) SubscriptionHan
 // At the end, it starts a `subscriptionRedisReader` to receive subscription
 // info from Redis.
 func (handler *redisSubscriptionHandler) HandleSubscriptionStart(subscription *graphqlws.Subscription) error {
-	subsr := &subscriptionRedisReader{
-		subscription: subscription,
-		handler:      handler,
-	}
+	subsr := newSubscriptionRedisReader(handler, subscription)
 
 	handler.conn.Logger.Debug("fields: ", subscription.Fields)
 

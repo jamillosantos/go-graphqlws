@@ -5,23 +5,43 @@ import (
 	"sync"
 
 	"github.com/gomodule/redigo/redis"
-	"github.com/lab259/graphql"
-
 	"github.com/jamillosantos/go-graphqlws"
+	"github.com/lab259/graphql"
 )
 
+type graphqlWSContextKey string
+
+// String wil return the key with a prefix to ensure the key is unique.
+func (key graphqlWSContextKey) String() string {
+	return "__graphql.context.key." + string(key)
+}
+
 var (
-	ConnectionContextKey   = "__graphqlws.connection"
-	SubscriptionContextKey = "__graphqlws.subscription"
+	// ConnectionContextKey is the key for keeping the connection reference on
+	// the context.
+	ConnectionContextKey graphqlWSContextKey = "connection"
+
+	// SubscriptionContextKey is the key for keeping the subscription reference
+	// on the context.
+	SubscriptionContextKey graphqlWSContextKey = "subscription"
 )
 
 type subscriptionRedisReader struct {
+	// topicsLen is saved to ensure the subscriptions were done correctly.
+	topicsLen          int
 	subscription       *graphqlws.Subscription
 	handler            *redisSubscriptionHandler
 	stateMutex         sync.Mutex
 	_state             readerState
 	pubSubConn         *redis.PubSubConn
 	subscriptionErrors int
+}
+
+func newSubscriptionRedisReader(handler *redisSubscriptionHandler, subscription *graphqlws.Subscription) *subscriptionRedisReader {
+	return &subscriptionRedisReader{
+		subscription: subscription,
+		handler:      handler,
+	}
 }
 
 func (reader *subscriptionRedisReader) readPump(subscriber graphqlws.Subscriber) {
@@ -57,12 +77,16 @@ func (reader *subscriptionRedisReader) readLoop(ctx context.Context, subscriber 
 		return
 	}
 	pubSubConn := &redis.PubSubConn{Conn: conn}
-	defer pubSubConn.Close()
+	defer func() {
+		pubSubConn.Close()
+		reader.subscription.Logger.Trace(1000, "exit readLoop (subscriptionRedisReader)")
+	}()
 
 	topics := make([]interface{}, len(subscriber.Topics()))
 	for i, topic := range subscriber.Topics() {
 		topics[i] = topic
 	}
+	reader.topicsLen = len(topics)
 	err = pubSubConn.Subscribe(topics...)
 	if err != nil {
 		// Increase the subscriptionErrors
@@ -91,9 +115,16 @@ func (reader *subscriptionRedisReader) readLoop(ctx context.Context, subscriber 
 }
 
 func (reader *subscriptionRedisReader) readIteration(ctx context.Context) error {
-	defer reader.subscription.Logger.Info("defer subscriptionRedisReader:readIteration")
 	msg := reader.pubSubConn.Receive()
 	switch m := msg.(type) {
+	case redis.Subscription:
+		switch m.Count {
+		case reader.topicsLen:
+			reader.subscription.Logger.Trace(1000, "all subscriptions have been subscribed")
+		case 0:
+			reader.subscription.Logger.Trace(1000, "all subscriptions have been unsubscribed")
+			return nil
+		}
 	case redis.Message:
 		ctx := context.WithValue(ctx, m.Channel, m.Data)
 		reader.subscription.Logger.Trace(graphqlws.TraceLevelInternalGQLMessages, "fromRedis: ", m.Channel, " ", string(m.Data))
@@ -115,7 +146,6 @@ func (reader *subscriptionRedisReader) readIteration(ctx context.Context) error 
 			// TODO Add some handler for handling these errors
 		}
 	case error:
-		reader.subscription.Logger.Error("error reading from redis: ", m)
 		return m
 	default:
 		// This will be just ignored.

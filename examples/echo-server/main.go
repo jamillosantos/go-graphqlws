@@ -9,7 +9,7 @@ import (
 
 	"github.com/gorilla/websocket"
 	"github.com/lab259/graphql"
-	"github.com/lab259/rlog"
+	"github.com/lab259/rlog/v2"
 
 	"github.com/jamillosantos/go-graphqlws"
 )

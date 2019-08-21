@@ -4,6 +4,7 @@ jobs:
   build:
     docker:
     - image: lab259/go-circleci:1.12
+    - image: redis:4.0.5-alpine
 
     steps:
       - checkout
