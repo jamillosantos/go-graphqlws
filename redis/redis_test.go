@@ -1,4 +1,4 @@
-package graphqlws_test
+package redis_test
 
 import (
 	"testing"
@@ -9,9 +9,8 @@ import (
 	. "github.com/onsi/gomega"
 )
 
-func TestGraphQLWS(t *testing.T) {
+func TestRedis(t *testing.T) {
 	rlog.SetOutput(GinkgoWriter)
-	// dir, _ := os.Getwd()
 	RegisterFailHandler(Fail)
-	macchiato.RunSpecs(t, "GraphQL WS Test Suite")
+	macchiato.RunSpecs(t, "GraphQL WS Redis Test Suite")
 }

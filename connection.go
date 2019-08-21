@@ -8,20 +8,20 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/gofrs/uuid"
 	"github.com/gorilla/websocket"
 	"github.com/lab259/graphql"
 	"github.com/lab259/graphql/language/parser"
-	"github.com/lab259/rlog"
+	"github.com/lab259/rlog/v2"
 )
 
-type ConnState string
+// ConnState is the state of the connection.
+type ConnState int
 
 const (
-	connStateUndefined    ConnState = ""
-	connStateInitializing ConnState = "initializing"
-	connStateEstablished  ConnState = "established"
-	connStateClosed       ConnState = "closed"
+	connStateUndefined ConnState = iota
+	connStateInitializing
+	connStateEstablished
+	connStateClosed
 )
 
 var (
@@ -30,49 +30,55 @@ var (
 )
 
 var (
-	ConnectionCount int64
+	// ConnectionCount is the counter of new connections, also used to identify
+	// each individual connection in the log.
+	ConnectionCount uint64
 )
 
+// Conn is a connection with a client.
 type Conn struct {
 	Logger           rlog.Logger
 	Schema           *graphql.Schema
 	Subscriptions    sync.Map
-	stateMutex       sync.Mutex
+	stateMutex       sync.RWMutex
 	_state           ConnState
 	handlersMutex    sync.Mutex
 	Handlers         []Handler
 	conn             *websocket.Conn
 	config           *Config
 	outgoingMessages chan *OperationMessage
+	incomingMessages chan *OperationMessage
+	shutdown         chan struct{}
 }
 
 // NewConn initializes a `Conn` instance.
 func NewConn(conn *websocket.Conn, schema *graphql.Schema, config *Config) (*Conn, error) {
-	connID, err := uuid.NewV4()
-	if err != nil {
-		return nil, err
-	}
 	c := &Conn{
 		Schema:           schema,
 		config:           config,
-		Logger:           rlog.WithField("connID", connID.String()),
+		Logger:           rlog.WithField("conn", atomic.AddUint64(&ConnectionCount, 1)),
 		conn:             conn,
+		incomingMessages: make(chan *OperationMessage, 10),
 		outgoingMessages: make(chan *OperationMessage, 10),
+		shutdown:         make(chan struct{}),
 		Handlers:         make([]Handler, 0, 3),
 	}
-	atomic.AddInt64(&ConnectionCount, 1)
 	go c.readPump()
-	go c.writePump()
+	go c.processMessages()
 	return c, nil
 }
 
+// getState returns the state of the conversation. In order to ensure no race
+// conditions happen, it uses a `RLock`.
 func (c *Conn) getState() ConnState {
-	c.stateMutex.Lock()
-	defer c.stateMutex.Unlock()
+	c.stateMutex.RLock()
+	defer c.stateMutex.RUnlock()
 
 	return c._state
 }
 
+// setState is the setter of the `Conn._state`. It locks a `RWMutex` to ensure
+// that no race conditions happen.
 func (c *Conn) setState(value ConnState) {
 	c.stateMutex.Lock()
 	defer c.stateMutex.Unlock()
@@ -130,7 +136,11 @@ func (c *Conn) SendError(err error) error {
 }
 
 func (c *Conn) sendConnectionError(err error) error {
-	if c.getState() == connStateClosed {
+	// Ensure that this conn is not locked.
+	c.stateMutex.RLock()
+	defer c.stateMutex.RUnlock()
+
+	if c._state == connStateClosed {
 		return ErrConnectionClosed
 	}
 
@@ -148,7 +158,11 @@ func (c *Conn) sendConnectionError(err error) error {
 }
 
 func (c *Conn) sendOperationErrors(id string, errs []error) error {
-	if c.getState() == connStateClosed {
+	// Ensure that this conn is not locked.
+	c.stateMutex.RLock()
+	defer c.stateMutex.RUnlock()
+
+	if c._state == connStateClosed {
 		return ErrConnectionClosed
 	}
 
@@ -166,13 +180,18 @@ func (c *Conn) sendOperationErrors(id string, errs []error) error {
 	return nil
 }
 
-func (c *Conn) close() {
-	if c.getState() == connStateClosed {
+func (c *Conn) close() error {
+	c.stateMutex.Lock()
+	defer c.stateMutex.Unlock()
+
+	if c._state == connStateClosed {
 		c.Logger.Debug("ignoring close: already closed")
-		return
+		return ErrConnectionClosed
 	}
 
-	c.setState(connStateClosed)
+	c._state = connStateClosed
+
+	close(c.shutdown)
 
 	// Go through the handlers and call all `WebsocketCloseHandler`s found.
 	for _, handler := range c.Handlers {
@@ -187,14 +206,13 @@ func (c *Conn) close() {
 				break
 			}
 		} else if err != nil {
-			return
+			return err
 		}
 	}
-
 	close(c.outgoingMessages)
-	atomic.AddInt64(&ConnectionCount, -1)
-	c.Logger.Trace(TraceLevelConnectionEvents, "trying to close ", c.conn.RemoteAddr())
-	_ = c.conn.Close()
+	close(c.incomingMessages)
+
+	return c.conn.Close()
 }
 
 func (c *Conn) pongHandler(message string) error {
@@ -239,33 +257,7 @@ func (c *Conn) closeHandler(code int, text string) error {
 		c.Logger.Trace(TraceLevelConnectionEvents, "closeHandler: defer closing: ", c.conn.RemoteAddr())
 	}()
 
-	c.setState(connStateClosed)
-	atomic.AddInt64(&ConnectionCount, -1)
-	close(c.outgoingMessages)
-
-	return c.lockHandlers(func() error {
-		c.Logger.Debug("closeHandler: calling handlers")
-		// Go through the handlers and call all `WebsocketCloseHandler`s found.
-		for _, handler := range c.Handlers {
-			h, ok := handler.(WebsocketCloseHandler)
-			if !ok { // If not a `ConnectionStartHandler` try next.
-				continue
-			}
-			err := h.HandleWebsocketClose(code, text)
-			hErr, ok := err.(*HandlerError)
-			if ok {
-				if hErr.propagationStopped {
-					break
-				}
-			} else if err != nil {
-				c.Logger.Error("failed to HandleWebsocketClose: ", err)
-				return err
-			}
-		}
-		c.Logger.Debug("closeHandler: calling handlers exited")
-
-		return nil
-	})
+	return c.close()
 }
 
 func (c *Conn) recover(t RWType) {
@@ -289,11 +281,17 @@ func (c *Conn) recover(t RWType) {
 			}
 		}
 
+		// Logs the stack with some information.
 		stack := make([]byte, 2048)
 		n := runtime.Stack(stack, false)
-		c.Logger.WithField("stack", string(stack[:n])).Error("panicked: ", r)
+		c.Logger.Critical("panicked: ", r)
+		c.Logger.Debug(string(stack[:n]))
 
-		c.Close()
+		if c.getState() == connStateClosed {
+			return
+		}
+
+		c.incomingMessages <- operationMessageEOF
 	}
 }
 
@@ -434,47 +432,129 @@ func (c *Conn) gqlStop(stop *GQLStop) {
 	}
 }
 
-// readPumpIteration runs one read iteration.
-func (c *Conn) readPumpIteration() {
-	defer c.recover(Read)
+func (c *Conn) readPump() {
+	defer func() {
+		c.Logger.Debug("leaving readPump (Conn)")
+	}()
+	defer c.close()
 
-	var operationMessage OperationMessage
-	err := c.conn.ReadJSON(&operationMessage)
-	switch err.(type) {
-	// These errors stops the connection.
-	case *websocket.CloseError, *net.OpError:
-		c.Logger.Error("*websocket.CloseError, *net.OpError: ", err)
-		c.close()
-		return
-	case net.Error:
-		c.Logger.Error("net.Error: ", err)
-		nErr := err.(net.Error)
-		if !nErr.Timeout() { // If !Timeout we should log it. Otherwise, it will be ignored.
-			panic(err)
-		}
-	default:
-		if err != nil {
-			c.Logger.Error("default: ", err)
-			// This error just stop the iteration.
-			panic(err)
-		}
+	c.setState(connStateInitializing)
+
+	if c.config.ReadLimit != nil {
+		// Prepare for the first pong.
+		// The read limit is the size of the package that will be read per once.
+		// That, might be adjustable depending your needs.
+		c.conn.SetReadLimit(*c.config.ReadLimit)
 	}
 
-	c.Logger.WithFields(rlog.Fields{
-		"id":      operationMessage.ID,
-		"type":    operationMessage.Type,
-		"payload": string(operationMessage.Payload),
-	}).Trace(TraceLevelConnectionEvents, "packet arrived.")
+	c.conn.SetPongHandler(c.pongHandler)
+	c.conn.SetCloseHandler(c.closeHandler)
+
+	for c.getState() != connStateClosed {
+		operationMessage := new(OperationMessage)
+
+		// Read JSON from the connection.
+		err := c.conn.ReadJSON(&operationMessage)
+		switch err.(type) {
+		// These errors stops the connection.
+		case *websocket.CloseError:
+			c.Logger.Error("*websocket.CloseError: ", err)
+			return
+		case *net.OpError:
+			c.Logger.Error("*net.OpError: ", err)
+			return
+		case net.Error:
+			c.Logger.Error("net.Error: ", err)
+			nErr := err.(net.Error)
+			if !nErr.Timeout() { // If !Timeout we should log it. Otherwise, it will be ignored.
+				c.incomingMessages <- operationMessageEOF
+				return
+			}
+		default:
+			if err != nil {
+				c.Logger.Error("default: ", err)
+				// This error just stop the iteration.
+				c.incomingMessages <- operationMessageEOF
+				return
+			}
+		}
+
+		c.Logger.WithFieldsArr(
+			"id", operationMessage.ID,
+			"type", operationMessage.Type,
+			"payload", string(operationMessage.Payload),
+		).Trace(TraceLevelConnectionEvents, "packet arrived.")
+
+		c.incomingMessages <- operationMessage
+	}
+}
+
+var emptyBytes = []byte{}
+
+func (c *Conn) processMessages() {
+	defer c.recover(Write)
+	pongWait := time.Second * 60 // Default pong timeout
+
+	if c.config.PongWait != nil {
+		pongWait = *c.config.PongWait
+	}
+
+	pingTicker := time.NewTicker((pongWait * 9) / 10)
+	defer func() {
+		c.Logger.Debug("leaving processMessages (Conn)")
+		c.close()
+		pingTicker.Stop()
+	}()
+
+	logger := c.Logger.WithField("method", "processMessages")
+
+	// Yes, this loop is forever. If the connection is closed... the `shutdown`
+	// channel will close this.
+	for {
+		select {
+		case operationMessage := <-c.incomingMessages:
+			// Waits until receive a message to be sent.
+			logger.Trace(TraceLevelInternalGQLMessages, "incoming message")
+
+			if operationMessage == operationMessageEOF {
+				// A EOF was sent and now it finalizes the processing of a the
+				// conn. The defer should gracefully closes everything.
+				return
+			}
+
+			c.processIncomeMessage(operationMessage)
+
+		case operationMessage := <-c.outgoingMessages:
+			// Waits until receive a message to be sent.
+			err := c.processOutgoingMessage(operationMessage)
+			if err != nil {
+				c.Logger.Error("error sending a message:", err)
+			}
+
+		case <-pingTicker.C:
+			// In case it takes too long to detect a message to be written, we should
+			// send a PING to keep the connection open.
+			c.conn.SetWriteDeadline(time.Now().Add(*c.config.WriteTimeout))
+			err := c.conn.WriteMessage(websocket.PingMessage, emptyBytes)
+			if err != nil {
+				// If cannot write the WriteMessage, the connection
+				// should be closed.
+				c.Logger.Error("error sending the pingMessage:", err)
+				c.conn.WriteMessage(websocket.CloseMessage, []byte{})
+				return
+			}
+		case <-c.shutdown:
+			return
+		}
+	}
+}
+
+func (c *Conn) processIncomeMessage(operationMessage *OperationMessage) {
+	logger := c.Logger.WithField("messageDirection", "income")
 
 	switch operationMessage.Type {
 	case gqlTypeConnectionInit:
-		// If the connection is not initializing, it is a protocol error and the
-		// connection should be reset.X
-		if c.getState() != connStateInitializing {
-			panic(ErrReinitializationForbidden)
-		}
-
-		c.Logger.Trace(TraceLevelInternalGQLMessages, "gqlConnectionInit: ", string(operationMessage.Payload))
+		logger.Trace(TraceLevelInternalGQLMessages, "gqlConnectionInit: ", string(operationMessage.Payload))
 
 		connectionInit := GQLConnectionInit{
 			Payload: operationMessage.Payload,
@@ -498,14 +578,14 @@ func (c *Conn) readPumpIteration() {
 						break
 					}
 					if defaultPrevented {
-						c.Logger.Error("error initialized but default prevented: ", hErr)
+						logger.Error("error initialized but default prevented: ", hErr)
 					} else {
 						return hErr
 					}
 				} else if err != nil {
 					sendConnectionErr := c.sendConnectionError(err)
 					if err != nil {
-						c.Logger.Error("error sending a connection error: ", sendConnectionErr)
+						logger.Error("error sending a connection error: ", sendConnectionErr)
 					}
 					return err // Returning here have to be checked. It might call the close too early and let the client without the response.
 				}
@@ -513,8 +593,8 @@ func (c *Conn) readPumpIteration() {
 			return nil
 		})
 		if err != nil {
-			c.Logger.Error("fatal error while initializing the connection: ", err)
-			c.Close()
+			logger.Error("fatal error while initializing the connection: ", err)
+			c.incomingMessages <- operationMessageEOF
 			// If the initialization failed, we should cancel the connection
 			return
 		}
@@ -522,14 +602,14 @@ func (c *Conn) readPumpIteration() {
 		// Now the handshake is done.
 		c.setState(connStateEstablished)
 
-		c.Logger.Info("connection established")
+		logger.Info("connection established")
 
 		// Add message to be sent for the writePump
 		c.outgoingMessages <- gqlConnectionAck
 	case gqlTypeConnectionTerminate:
 		var terminate GQLConnectionTerminate
 
-		c.Logger.Trace(TraceLevelInternalGQLMessages, "gqlConnectionTerminate")
+		logger.Trace(TraceLevelInternalGQLMessages, "gqlConnectionTerminate")
 
 		// No need to unmarshal a `GQLConnectionTerminate`. The protocol does not define anything.
 		// So, why does it exists? Because future improvements might add something there. So it is
@@ -548,12 +628,11 @@ func (c *Conn) readPumpIteration() {
 					break
 				}
 			} else if err != nil {
-				c.Logger.Error("error terminating the connection: ", err)
+				logger.Error("error terminating the connection: ", err)
 			}
 		}
 
-		// This should close end readPump and writePump.
-		c.close()
+		c.incomingMessages <- operationMessageEOF
 
 		return // Bye bye readPump
 	case gqlTypeStart:
@@ -561,27 +640,27 @@ func (c *Conn) readPumpIteration() {
 			panic(ErrConnectionNotFullyEstablished)
 		}
 
-		c.Logger.Trace(TraceLevelInternalGQLMessages, "gqlStart: ", string(operationMessage.Payload))
+		logger.Trace(TraceLevelInternalGQLMessages, "gqlStart: ", string(operationMessage.Payload))
 
 		start := GQLStart{
 			ID: operationMessage.ID,
 		}
-		err = json.Unmarshal(operationMessage.Payload, &start.Payload)
+		err := json.Unmarshal(operationMessage.Payload, &start.Payload)
 		if err != nil {
-			c.Logger.Error("failed to unmarshal the payload at gqlStart: ", err)
+			logger.Error("failed to unmarshal the payload at gqlStart: ", err)
 			err = c.sendOperationErrors(start.ID, []error{err})
 			if err != nil {
-				c.Logger.Error("failed to sendOperationErrors at gqlStart: ", err)
+				logger.Error("failed to sendOperationErrors at gqlStart: ", err)
 			}
 			return
 		}
 
 		c.gqlStart(&start)
 	case gqlTypeStop:
-		c.Logger.Trace(TraceLevelInternalGQLMessages, "gqlStop: ", string(operationMessage.Payload))
+		logger.Trace(TraceLevelInternalGQLMessages, "gqlStop: ", string(operationMessage.Payload))
 
 		var stop GQLStop
-		err = json.Unmarshal(operationMessage.Payload, &stop)
+		err := json.Unmarshal(operationMessage.Payload, &stop)
 		if err != nil {
 			// TODO
 			panic(err)
@@ -593,87 +672,28 @@ func (c *Conn) readPumpIteration() {
 	}
 }
 
-func (c *Conn) readPump() {
-	defer func() {
-		c.Logger.Debug("leaving readPump")
-	}()
-	defer c.close()
-
-	c.setState(connStateInitializing)
-
-	if c.config.ReadLimit != nil {
-		// Prepare for the first pong.
-		// The read limit is the size of the package that will be read per once.
-		// That, might be adjustable depending your needs.
-		c.conn.SetReadLimit(*c.config.ReadLimit)
+func (c *Conn) processOutgoingMessage(operationMessage *OperationMessage) error {
+	c.conn.SetWriteDeadline(time.Now().Add(*c.config.WriteTimeout))
+	if operationMessage == operationMessageEOF {
+		// !ok: The outgoingMessages channel was closed.
+		// Or the message sent was a EOF and it means that the connection was closed.
+		c.conn.WriteMessage(websocket.CloseMessage, []byte{})
+		return nil
 	}
 
-	c.conn.SetPongHandler(c.pongHandler)
-	c.conn.SetCloseHandler(c.closeHandler)
-
-	c.Logger.Trace(TraceLevelConnectionEvents, "New connection from ", c.conn.RemoteAddr())
-
-	for c.getState() != connStateClosed {
-		c.readPumpIteration()
-	}
-}
-
-var emptyBytes = []byte{}
-
-func (c *Conn) writePump() {
-	defer c.recover(Write)
-	pongWait := time.Second * 60 // Default pong timeout
-
-	if c.config.PongWait != nil {
-		pongWait = *c.config.PongWait
-	}
-
-	pingTicker := time.NewTicker((pongWait * 9) / 10)
-	defer func() {
-		c.close()
-		c.Logger.Debug("leaving writePump")
-		pingTicker.Stop()
-	}()
-
-	for c.getState() != connStateClosed {
-		select {
-		// Waits until receive a message to be sent.
-		case operationMessage, ok := <-c.outgoingMessages:
-			c.conn.SetWriteDeadline(time.Now().Add(*c.config.WriteTimeout))
-			if !ok || operationMessage == operationMessageEOF {
-				// !ok: The outgoingMessages channel was closed.
-				// Or the message sent was a EOF and it means that the connection was closed.
-				c.conn.WriteMessage(websocket.CloseMessage, []byte{})
-				return
-			}
-
-			// Schedule a possible write timeout.
-			// Actually writes the response to the websocket connection.
-			err := c.conn.WriteJSON(operationMessage)
-			if err != nil {
-				c.Logger.Error("error sending the operationMessage:", err)
-			}
-			// In case it takes too long to detect a message to be written, we should
-			// send a PING to keep the connection open.
-		case <-pingTicker.C:
-			c.conn.SetWriteDeadline(time.Now().Add(*c.config.WriteTimeout))
-			err := c.conn.WriteMessage(websocket.PingMessage, emptyBytes)
-			if err != nil {
-				// If cannot write the WriteMessage, the connection
-				// should be closed.
-				c.Logger.Error("error sending the pingMessage:", err)
-				c.conn.WriteMessage(websocket.CloseMessage, []byte{})
-				return
-			}
-		}
-	}
+	// Schedule a possible write timeout.
+	// Actually writes the response to the websocket connection.
+	return c.conn.WriteJSON(operationMessage)
 }
 
 // Close finishes the connection.
-func (c *Conn) Close() {
+func (c *Conn) Close() error {
 	if c.getState() == connStateClosed {
-		return
+		return ErrConnectionClosed
 	}
-	_ = c.conn.WriteControl(websocket.CloseMessage, nil, time.Now().Add(*c.config.WriteTimeout))
-	c.close()
+	err := c.conn.WriteControl(websocket.CloseMessage, nil, time.Now().Add(*c.config.WriteTimeout))
+	if err != nil {
+		return err
+	}
+	return c.close()
 }
