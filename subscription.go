@@ -4,8 +4,8 @@ import (
 	"encoding/json"
 	"errors"
 
-	"github.com/lab259/graphql"
-	"github.com/lab259/graphql/language/ast"
+	"github.com/graphql-go/graphql"
+	"github.com/graphql-go/graphql/language/ast"
 	"github.com/lab259/rlog/v2"
 )
 

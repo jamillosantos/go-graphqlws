@@ -4,7 +4,7 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
-	"github.com/lab259/graphql"
+	"github.com/graphql-go/graphql"
 
 	"github.com/jamillosantos/go-graphqlws"
 

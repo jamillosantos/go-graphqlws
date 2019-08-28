@@ -1,6 +1,6 @@
 # Example
 
-You will find the UI for this example at [lab259/graphqlws-chat-client](https://github.com/lab259/graphqlws-chat-client).
+You will find the UI for this example at [lab259/graphqlws-chat-client](https://github.com/graphql-go/graphqlws-chat-client).
 
 Before running the example you should:
 

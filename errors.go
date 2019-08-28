@@ -3,7 +3,7 @@ package graphqlws
 import (
 	"errors"
 
-	"github.com/lab259/graphql/gqlerrors"
+	"github.com/graphql-go/graphql/gqlerrors"
 )
 
 var (

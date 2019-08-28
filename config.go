@@ -3,7 +3,7 @@ package graphqlws
 import (
 	"time"
 
-	"github.com/lab259/graphql"
+	"github.com/graphql-go/graphql"
 )
 
 const (

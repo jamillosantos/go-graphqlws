@@ -6,7 +6,7 @@ import (
 
 	"github.com/gomodule/redigo/redis"
 	"github.com/jamillosantos/go-graphqlws"
-	"github.com/lab259/graphql"
+	"github.com/graphql-go/graphql"
 )
 
 type graphqlWSContextKey string
