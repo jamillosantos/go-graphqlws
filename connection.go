@@ -9,8 +9,8 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
-	"github.com/lab259/graphql"
-	"github.com/lab259/graphql/language/parser"
+	"github.com/graphql-go/graphql"
+	"github.com/graphql-go/graphql/language/parser"
 	"github.com/lab259/rlog/v2"
 )
 

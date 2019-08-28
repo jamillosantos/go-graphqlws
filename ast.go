@@ -7,7 +7,7 @@ package graphqlws
 //
 
 import (
-	"github.com/lab259/graphql/language/ast"
+	"github.com/graphql-go/graphql/language/ast"
 )
 
 func operationDefinitionsWithOperation(

@@ -5,7 +5,7 @@ import (
 	"reflect"
 	"sync"
 
-	"github.com/lab259/graphql"
+	"github.com/graphql-go/graphql"
 
 	"github.com/jamillosantos/go-graphqlws"
 )

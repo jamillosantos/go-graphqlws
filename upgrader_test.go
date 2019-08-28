@@ -6,7 +6,7 @@ import (
 	"strings"
 
 	"github.com/gorilla/websocket"
-	"github.com/lab259/graphql"
+	"github.com/graphql-go/graphql"
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
 
