@@ -661,14 +661,18 @@ func (c *Conn) processIncomeMessage(operationMessage *OperationMessage) {
 	case gqlTypeStop:
 		logger.Trace(TraceLevelInternalGQLMessages, "gqlStop: ", string(operationMessage.Payload))
 
-		var stop GQLStop
-		err := json.Unmarshal(operationMessage.Payload, &stop)
-		if err != nil {
-			// TODO
-			panic(err)
+		if len(operationMessage.Payload) > 0 {
+			var stop GQLStop
+			err := json.Unmarshal(operationMessage.Payload, &stop)
+			if err != nil {
+				// TODO
+				panic(err)
+			}
+			c.gqlStop(&stop)
+			return
 		}
+		c.close()
 
-		c.gqlStop(&stop)
 	default:
 		// TODO To call a default error handler or, maybe, a default message handler.
 	}
