@@ -30,7 +30,7 @@ type ConnectionInitHandler interface {
 // ConnectionStartHandler describes the handler that will be called when a GQL_START
 // is happens.
 //
-// More information abuot GQL_START at https://github.com/apollographql/subscriptions-transport-ws/blob/master/PROTOCOL.md#gql_start
+// More information about GQL_START at https://github.com/apollographql/subscriptions-transport-ws/blob/master/PROTOCOL.md#gql_start
 type ConnectionStartHandler interface {
 	Handler
 	HandleConnectionStart(*GQLStart) []error
