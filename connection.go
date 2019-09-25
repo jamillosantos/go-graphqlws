@@ -465,11 +465,8 @@ func (c *Conn) readPump() {
 			return
 		case net.Error:
 			c.Logger.Error("net.Error: ", err)
-			nErr := err.(net.Error)
-			if !nErr.Timeout() { // If !Timeout we should log it. Otherwise, it will be ignored.
-				c.incomingMessages <- operationMessageEOF
-				return
-			}
+			c.incomingMessages <- operationMessageEOF
+			return
 		default:
 			if err != nil {
 				c.Logger.Error("default: ", err)
@@ -583,8 +580,9 @@ func (c *Conn) processIncomeMessage(operationMessage *OperationMessage) {
 						return hErr
 					}
 				} else if err != nil {
+					logger.Error("error handling connection init: ", err)
 					sendConnectionErr := c.sendConnectionError(err)
-					if err != nil {
+					if sendConnectionErr != nil {
 						logger.Error("error sending a connection error: ", sendConnectionErr)
 					}
 					return err // Returning here have to be checked. It might call the close too early and let the client without the response.
