@@ -209,6 +209,10 @@ func (c *Conn) close() error {
 			return err
 		}
 	}
+
+	// Add a wait to give time for the shutdown to be processed.
+	time.Sleep(time.Millisecond * 10)
+
 	close(c.outgoingMessages)
 	close(c.incomingMessages)
 
@@ -509,6 +513,8 @@ func (c *Conn) processMessages() {
 	// channel will close this.
 	for {
 		select {
+		case <-c.shutdown:
+			return
 		case operationMessage := <-c.incomingMessages:
 			// Waits until receive a message to be sent.
 			logger.Trace(TraceLevelInternalGQLMessages, "incoming message")
@@ -540,8 +546,6 @@ func (c *Conn) processMessages() {
 				c.conn.WriteMessage(websocket.CloseMessage, []byte{})
 				return
 			}
-		case <-c.shutdown:
-			return
 		}
 	}
 }
@@ -657,14 +661,18 @@ func (c *Conn) processIncomeMessage(operationMessage *OperationMessage) {
 	case gqlTypeStop:
 		logger.Trace(TraceLevelInternalGQLMessages, "gqlStop: ", string(operationMessage.Payload))
 
-		var stop GQLStop
-		err := json.Unmarshal(operationMessage.Payload, &stop)
-		if err != nil {
-			// TODO
-			panic(err)
+		if len(operationMessage.Payload) > 0 {
+			var stop GQLStop
+			err := json.Unmarshal(operationMessage.Payload, &stop)
+			if err != nil {
+				// TODO
+				panic(err)
+			}
+			c.gqlStop(&stop)
+			return
 		}
+		c.close()
 
-		c.gqlStop(&stop)
 	default:
 		// TODO To call a default error handler or, maybe, a default message handler.
 	}
